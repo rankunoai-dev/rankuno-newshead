@@ -13,7 +13,7 @@ from datetime import date, datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from . import compose, db, enrich, google_news, render, slots
+from . import compose, db, enrich, google_news, images, render, slots
 from .config import Config, ConfigError, load_config
 from .fetch import run_fetch
 from .mail_profiles import PRODUCTION, TEST, MailProfile, load_profile
@@ -195,6 +195,11 @@ def build_issue(cfg: Config, conn: sqlite3.Connection, *, issue_date: date | Non
         log.error("No stories left for issue %s after the security screen.", issue_date)
         return None
 
+    out_dir = cfg.data_dir / "issues" / issue_date.isoformat()
+    # Pictures are embedded, not linked: Outlook cannot show WebP and asks before loading linked images.
+    lead_item = content.top_stories[0].item_id if content.top_stories else None
+    story_images = {} if offline else images.embed_story_images(content.stories, lead_item, out_dir / "images", cfg.fetch.user_agent)
+
     meta = render.IssueMeta(
         number=db.sent_issue_count(conn) + 1,
         issue_date=issue_date,
@@ -202,7 +207,7 @@ def build_issue(cfg: Config, conn: sqlite3.Connection, *, issue_date: date | Non
         window_end=now,
         subject=render.make_subject(cfg, issue_date),
     )
-    html_body, text_body = render.render_issue(content, meta, cfg)
+    html_body, text_body = render.render_issue(content, meta, cfg, story_images=story_images)
 
     # Output gate: the finished email is checked before anything is written.
     findings = gate.scan_email(meta.subject, html_body, text_body)
@@ -211,9 +216,8 @@ def build_issue(cfg: Config, conn: sqlite3.Connection, *, issue_date: date | Non
             log.error("Security: %s", finding.message)
         log.error("Build of issue %s stopped by the security layer; no files were written.", issue_date)
         return None
-    preview_body, _ = render.render_issue(content, meta, cfg, preview=True)
+    preview_body, _ = render.render_issue(content, meta, cfg, preview=True, story_images=story_images)
 
-    out_dir = cfg.data_dir / "issues" / issue_date.isoformat()
     out_dir.mkdir(parents=True, exist_ok=True)
     html_path, text_path, preview_path = out_dir / "email.html", out_dir / "email.txt", out_dir / "preview.html"
     html_path.write_text(html_body, encoding="utf-8")
@@ -224,7 +228,9 @@ def build_issue(cfg: Config, conn: sqlite3.Connection, *, issue_date: date | Non
         profile = load_profile(PRODUCTION, cfg)
     except ConfigError:
         profile = None
-    eml = _message(cfg, profile, meta.subject, html_body, text_body, _preview_recipient(cfg))
+    embedded = {image.cid: image.path for image in story_images.values()}
+    eml = _message(cfg, profile, meta.subject, html_body, text_body, _preview_recipient(cfg),
+                   {**render.inline_images(cfg), **embedded})
     (out_dir / "email.eml").write_bytes(mime_bytes(eml))
 
     db.save_issue(
@@ -238,7 +244,7 @@ def build_issue(cfg: Config, conn: sqlite3.Connection, *, issue_date: date | Non
         text_path=text_path.relative_to(cfg.data_dir).as_posix(),
         built_at=now,
         stories=[(story.item_id, story.section_id) for story in content.stories],
-        html_sha256=preflight.sha256(html_body),
+        html_sha256=preflight.html_fingerprint(html_body, {cid: path.read_bytes() for cid, path in embedded.items()}),
         text_sha256=preflight.sha256(text_body),
     )
 
@@ -275,14 +281,13 @@ def send_issue(cfg: Config, conn: sqlite3.Connection, profile: MailProfile, *, i
             )
             return 1
 
-    bodies = _read_issue_files(cfg, issue)
-    if bodies is None:
+    loaded = _read_issue_files(cfg, issue)
+    if loaded is None:
         return 1
-    html_body, text_body = bodies
-    images = render.inline_images(cfg)
+    html_body, text_body, inline = loaded
 
     def make_message(recipient: str):
-        return _message(cfg, profile, profile.subject(issue["subject"]), html_body, text_body, recipient, images)
+        return _message(cfg, profile, profile.subject(issue["subject"]), html_body, text_body, recipient, inline)
 
     with DnsResolver() as resolver:
         report = preflight.run_preflight(
@@ -296,6 +301,7 @@ def send_issue(cfg: Config, conn: sqlite3.Connection, profile: MailProfile, *, i
             sender=profile.sender,
             smtp_host=profile.server_host,
             resolver=resolver,
+            images=_story_image_bytes(cfg, inline),
         )
     for finding in report.findings:
         (log.error if finding.is_error else log.warning)("Security [%s]: %s", finding.check, finding.message)
@@ -402,11 +408,12 @@ def _security_check(cfg: Config, conn: sqlite3.Connection, args: argparse.Namesp
         print(f"No issue has been built for {args.date}.")
         return 1
     html_body = text_body = ""
+    inline = render.inline_images(cfg)
     if issue is not None:
-        bodies = _read_issue_files(cfg, issue)
-        if bodies is None:
+        loaded = _read_issue_files(cfg, issue)
+        if loaded is None:
             return 1
-        html_body, text_body = bodies
+        html_body, text_body, inline = loaded
     subject = profile.subject(issue["subject"] if issue is not None else render.make_subject(cfg, date.today()))
 
     with DnsResolver() as resolver:
@@ -417,10 +424,11 @@ def _security_check(cfg: Config, conn: sqlite3.Connection, args: argparse.Namesp
             html_body=html_body,
             text_body=text_body,
             requested_recipients=profile.recipients,
-            make_message=lambda recipient: _message(cfg, profile, subject, html_body, text_body, recipient),
+            make_message=lambda recipient: _message(cfg, profile, subject, html_body, text_body, recipient, inline),
             sender=profile.sender,
             smtp_host=profile.server_host,
             resolver=resolver,
+            images=_story_image_bytes(cfg, inline),
         )
 
     print()
@@ -621,15 +629,35 @@ def issue_file(cfg: Config, stored: str) -> Path:
     return in_data_dir if in_data_dir.exists() or not (cfg.root / path).exists() else cfg.root / path
 
 
-def _read_issue_files(cfg: Config, issue: sqlite3.Row) -> tuple[str, str] | None:
+_CID_SOURCE = re.compile(r'src="cid:([A-Za-z0-9_.-]+)"')
+
+
+def issue_images(cfg: Config, issue: sqlite3.Row, html_body: str) -> dict[str, Path]:
+    """Every image the email embeds, by Content-ID: the logos and the story pictures saved at build time."""
+    logos = render.inline_images(cfg)
+    folder = issue_file(cfg, issue["html_path"]).parent / "images"
+    return {cid: logos.get(cid) or folder / f"{cid}.jpg" for cid in dict.fromkeys(_CID_SOURCE.findall(html_body))}
+
+
+def _story_image_bytes(cfg: Config, inline: dict[str, Path]) -> dict[str, bytes]:
+    logos = render.inline_images(cfg)
+    return {cid: path.read_bytes() for cid, path in inline.items() if cid not in logos}
+
+
+def _read_issue_files(cfg: Config, issue: sqlite3.Row) -> tuple[str, str, dict[str, Path]] | None:
+    """(html, text, embedded images) of a built issue, or None if a file is missing."""
     try:
-        return (
-            issue_file(cfg, issue["html_path"]).read_text(encoding="utf-8"),
-            issue_file(cfg, issue["text_path"]).read_text(encoding="utf-8"),
-        )
+        html_body = issue_file(cfg, issue["html_path"]).read_text(encoding="utf-8")
+        text_body = issue_file(cfg, issue["text_path"]).read_text(encoding="utf-8")
     except FileNotFoundError as exc:
         log.error("The email files for issue %s are missing (%s). Run 'build' again.", issue["issue_date"], exc.filename)
         return None
+    inline = issue_images(cfg, issue, html_body)
+    missing = [str(path) for path in inline.values() if not path.is_file()]
+    if missing:
+        log.error("Images embedded in issue %s are missing (%s). Run 'build' again.", issue["issue_date"], ", ".join(missing))
+        return None
+    return html_body, text_body, inline
 
 
 def _preview_recipient(cfg: Config) -> str:

@@ -32,7 +32,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
-from . import cli, db, render
+from . import cli, db
 from .config import Config, ConfigError
 from .mail_profiles import PRODUCTION, TEST, load_profile, production_sending_enabled
 from .mailer import MailError
@@ -426,9 +426,12 @@ def preview_page(cfg: Config) -> str | None:
         body = cli.issue_file(cfg, issue["html_path"]).read_text(encoding="utf-8")
     except FileNotFoundError:
         return None
-    for content_id, path in render.inline_images(cfg).items():
+    for content_id, path in cli.issue_images(cfg, issue, body).items():
+        if not path.is_file():
+            continue
+        media_type = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
         data = base64.b64encode(path.read_bytes()).decode("ascii")
-        body = body.replace(f'"cid:{content_id}"', f'"data:image/png;base64,{data}"')
+        body = body.replace(f'"cid:{content_id}"', f'"data:{media_type};base64,{data}"')
     return body
 
 

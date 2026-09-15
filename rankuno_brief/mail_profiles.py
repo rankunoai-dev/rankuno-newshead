@@ -13,6 +13,7 @@ default used by both profiles, so a value only needs repeating when the two prof
 Recipients never fall back from one profile to the other:
 
     TEST_RECIPIENTS     required for test copies; they go to these addresses and nobody else
+    TEST_SUBJECT_PREFIX optional subject prefix for test copies, e.g. [TEST]; empty by default
     PROD_RECIPIENTS     optional; when empty the production list is config/recipients.txt
     PROD_SEND_ENABLED   production issues are sent only when this is "true" (test copies always work)
 """
@@ -46,6 +47,7 @@ class MailProfile:
     send_enabled: bool
     smtp: SmtpSettings | None = None
     graph: GraphSettings | None = None
+    subject_prefix: str = ""  # TEST_SUBJECT_PREFIX, e.g. "[TEST] "; production subjects never get one
 
     @property
     def is_test(self) -> bool:
@@ -57,7 +59,7 @@ class MailProfile:
         return self.smtp.host if self.smtp else GRAPH_HOST
 
     def subject(self, subject: str) -> str:
-        return f"[TEST] {subject}" if self.is_test else subject
+        return f"{self.subject_prefix}{subject}" if self.subject_prefix else subject
 
     def transport(self):
         if self.provider == GRAPH:
@@ -138,7 +140,13 @@ def load_profile(name: str, cfg: Config, environ: Mapping[str, str] | None = Non
         send_enabled=name == TEST or production_sending_enabled(env),
         smtp=smtp,
         graph=graph,
+        subject_prefix=_prefix(env.get("TEST_SUBJECT_PREFIX", "")) if name == TEST else "",
     )
+
+
+def _prefix(value: str) -> str:
+    value = value.strip()
+    return f"{value} " if value else ""
 
 
 def production_sending_enabled(environ: Mapping[str, str] | None = None) -> bool:

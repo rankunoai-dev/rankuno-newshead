@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -11,6 +12,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from .compose import IssueContent
 from .config import Config
+from .images import EmbeddedImage
 
 GMAIL_CLIP_BYTES = 102_000  # Gmail hides everything after ~102 KB of HTML behind "View entire message"
 
@@ -36,22 +38,41 @@ def inline_images(cfg: Config) -> dict[str, Path]:
     }
 
 
-def render_issue(content: IssueContent, meta: IssueMeta, cfg: Config, *, preview: bool = False) -> tuple[str, str]:
+def render_issue(
+    content: IssueContent,
+    meta: IssueMeta,
+    cfg: Config,
+    *,
+    preview: bool = False,
+    story_images: Mapping[int, EmbeddedImage] | None = None,
+) -> tuple[str, str]:
     """Render the HTML and plain-text bodies.
 
     Emails reference embedded images as cid: links; a preview (for opening in a browser)
-    points at the image files on disk instead.
+    points at the image files on disk instead. Without `story_images`, stories link their
+    original image addresses (used for quick offline previews and tests).
     """
     env = _environment(cfg)
     tz = cfg.newsletter.timezone
     images = {
         name: (path.resolve().as_uri() if preview else f"cid:{name}") for name, path in inline_images(cfg).items()
     }
+
+    def story_image(story, display_width: int) -> dict | None:
+        if story_images is None:
+            return {"src": story.image_url, "height": None} if story.image_url else None
+        embedded = story_images.get(story.item_id)
+        if embedded is None:
+            return None
+        src = embedded.path.resolve().as_uri() if preview else f"cid:{embedded.cid}"
+        return {"src": src, "height": embedded.display_height(display_width)}
+
     context = {
         "cfg": cfg.newsletter,
         "meta": meta,
         "content": content,
         "images": images,
+        "story_image": story_image,
         "coverage": coverage_label(meta.window_start.astimezone(tz).date(), meta.window_end.astimezone(tz).date()),
         "preheader": _preheader(content),
     }

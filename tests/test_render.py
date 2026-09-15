@@ -25,7 +25,7 @@ def test_issue_renders_stories_escaped_and_complete(cfg):
     assert "<script>alert(1)</script>" not in html_body
     assert "&lt;script&gt;" in html_body
     assert "Google expanded AI Overviews &amp; AI Mode." in html_body
-    assert "ISSUE NO. 7" in html_body
+    assert "ISSUE NO" not in html_body.upper() and "Issue No" not in text_body
     assert "Monday, 14 September 2026" in html_body
     assert "Found via Reddit r/SEO" in html_body
     assert "BLOG.EXAMPLE.ORG" in html_body

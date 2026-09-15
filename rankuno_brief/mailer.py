@@ -283,8 +283,10 @@ def build_message(
     html_part = message.get_payload()[1]
     for content_id, path in (inline_images or {}).items():
         subtype = mimetypes.guess_type(path.name)[0].split("/")[1]
+        # "inline", so mail clients show the pictures in the email rather than listing them as attachments
         html_part.add_related(
-            path.read_bytes(), maintype="image", subtype=subtype, cid=f"<{content_id}>", filename=path.name
+            path.read_bytes(), maintype="image", subtype=subtype, cid=f"<{content_id}>", filename=path.name,
+            disposition="inline",
         )
     return message
 

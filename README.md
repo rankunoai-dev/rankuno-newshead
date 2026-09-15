@@ -11,6 +11,9 @@ twice a week (Monday and Thursday, 09:00 IST).
 - **Issue build:** duplicates are merged under the most trusted version. Google News links are
   resolved to the original articles, and missing images and summaries are read from the article
   pages. An Outlook-safe email is rendered.
+- **Embedded pictures:** story images are downloaded at build time, converted to small JPEGs and
+  embedded in the email. Linked images often failed in Outlook: many sites send WebP, which classic
+  Outlook cannot display, some originals are several MB, and Outlook asks before loading linked pictures.
 - **Security layer:** every story is screened for offensive or sensitive content before it can be
   selected, the finished email is checked again before it is saved and before it is sent, and only
   allowed, valid addresses receive it. See [Security layer](#security-layer).
@@ -68,6 +71,7 @@ switching from Gmail to Microsoft 365 or changing who receives tests needs no co
 | Variable | Meaning |
 |---|---|
 | `TEST_RECIPIENTS` | Test copies go to these addresses and nobody else, e.g. `rajat.singh@rankuno.com` |
+| `TEST_SUBJECT_PREFIX` | Optional subject prefix for test copies, e.g. `[TEST]`. Empty = same subject as the real issue |
 | `PROD_SEND_ENABLED` | Production issues are sent only when `true` |
 | `PROD_RECIPIENTS` | Optional production list; empty = `config/recipients.txt` |
 | `MAIL_PROVIDER` | `smtp` (e.g. Gmail) or `graph` (Microsoft 365) |

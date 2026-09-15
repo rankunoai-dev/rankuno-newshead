@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from email.message import EmailMessage
 
@@ -43,6 +43,16 @@ def sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def html_fingerprint(html_body: str, images: Mapping[str, bytes] | None = None) -> str:
+    """Fingerprint of the HTML and every image embedded in it, so a swapped picture is caught too.
+    Without images it equals sha256(html_body)."""
+    digest = hashlib.sha256(html_body.encode("utf-8"))
+    for cid in sorted(images or {}):
+        digest.update(f"\n{cid}:".encode())
+        digest.update(hashlib.sha256(images[cid]).digest())
+    return digest.hexdigest()
+
+
 def run_preflight(
     cfg,
     conn: sqlite3.Connection,
@@ -55,13 +65,14 @@ def run_preflight(
     sender: str | None,
     smtp_host: str | None,
     resolver: DnsResolver | None,
+    images: Mapping[str, bytes] | None = None,
 ) -> PreflightReport:
     """Without an issue (none built yet) only the recipients and the sender are checked."""
     report = PreflightReport(checks=list(CHECKS))
     gate = content.gate_for(cfg)
 
     if issue is not None:
-        report.findings.extend(check_integrity(issue, html_body, text_body))
+        report.findings.extend(check_integrity(issue, html_body, text_body, images))
         report.findings.extend(gate.scan_email(issue["subject"], html_body, text_body))
 
     report.recipients = recipients.check_recipients(
@@ -86,12 +97,14 @@ def run_preflight(
     return report
 
 
-def check_integrity(issue: sqlite3.Row, html_body: str, text_body: str) -> list[Finding]:
-    """The files must match the fingerprints recorded when the build screened them."""
+def check_integrity(
+    issue: sqlite3.Row, html_body: str, text_body: str, images: Mapping[str, bytes] | None = None
+) -> list[Finding]:
+    """The files and embedded images must match the fingerprints recorded when the build screened them."""
     expected_html, expected_text = issue["html_sha256"], issue["text_sha256"]
     if not expected_html or not expected_text:
         return [error("integrity", f"Issue {issue['issue_date']} was built before the security layer existed. Run 'build' again.")]
-    if sha256(html_body) != expected_html or sha256(text_body) != expected_text:
+    if html_fingerprint(html_body, images) != expected_html or sha256(text_body) != expected_text:
         return [
             error(
                 "integrity",

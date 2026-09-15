@@ -20,6 +20,8 @@ from .dns import DnsError, DnsResolver
 from .findings import Finding, error, warning
 
 GMAIL_CLIP_BYTES = 102_000
+LARGE_MESSAGE_BYTES = 1_500_000
+MAX_MESSAGE_BYTES = 3_000_000  # Graph's 4 MB request limit, after base64 encoding
 MAX_LINKS = 150
 MAX_REMOTE_IMAGES = 40
 
@@ -101,6 +103,10 @@ def lint_message(message: EmailMessage, *, html_body: str, text_body: str, gate:
     longest = max(len(line) for line in raw.split(b"\r\n"))
     if longest > 998:
         findings.append(error(check, f"A line of the message is {longest} bytes; servers break lines over 998 bytes, garbling the email"))
+    if len(raw) > MAX_MESSAGE_BYTES:
+        findings.append(error(check, f"The message is {len(raw) / 1e6:.1f} MB; Microsoft Graph refuses more than 3 MB of email (4 MB request)"))
+    elif len(raw) > LARGE_MESSAGE_BYTES:
+        findings.append(warning(check, f"The message is {len(raw) / 1e6:.1f} MB; large emails load slowly and score worse with spam filters"))
 
     content_types = {part.get_content_type() for part in message.walk()}
     if "text/plain" not in content_types:

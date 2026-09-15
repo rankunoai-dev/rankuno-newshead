@@ -54,13 +54,14 @@
 {% endmacro %}
 
 {% macro lead_story(story, last) %}
+{% set image = story_image(story, 568) %}
 <tr>
   <td class="px" style="padding:0 36px;">
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
-      {% if story.image_url %}
+      {% if image %}
       <tr>
         <td style="padding-bottom:18px;">
-          <img src="{{ story.image_url }}" width="568" alt="" style="display:block; width:100%; max-width:568px; height:auto; border:0;">
+          <img src="{{ image.src }}" width="568"{% if image.height %} height="{{ image.height }}"{% endif %} alt="" style="display:block; width:100%; max-width:568px; height:auto; border:0;">
         </td>
       </tr>
       {% endif %}
@@ -83,13 +84,14 @@
 {% endmacro %}
 
 {% macro story_row(story, last) %}
+{% set image = story_image(story, 150) %}
 <tr>
   <td class="px" style="padding:0 36px;">
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
       <tr>
-        {% if story.image_url %}
+        {% if image %}
         <td class="stack thumb-cell" width="170" valign="top" style="width:170px; padding:4px 20px 0 0;">
-          <img class="thumb-img" src="{{ story.image_url }}" width="150" alt="" style="display:block; width:150px; height:auto; border:0;">
+          <img class="thumb-img" src="{{ image.src }}" width="150"{% if image.height %} height="{{ image.height }}"{% endif %} alt="" style="display:block; width:150px; height:auto; border:0;">
         </td>
         {% endif %}
         <td class="stack" valign="top">
@@ -176,9 +178,8 @@
           <td class="stack" valign="middle" width="50%" style="width:50%;">
             <a href="{{ cfg.website_url }}"><img src="{{ images.logo }}" width="150" height="58" alt="RankUno" style="display:block; width:150px; height:58px; border:0; font-family:Arial, Helvetica, sans-serif; font-size:20px; font-weight:bold; color:#DF212A;"></a>
           </td>
-          <td class="stack masthead-meta" valign="middle" align="right" width="50%" style="width:50%; text-align:right; font-family:Arial, Helvetica, sans-serif; font-size:11px; line-height:18px; letter-spacing:1px; color:#707070;">
-            ISSUE NO. {{ meta.number }}<br>
-            <span style="font-size:13px; letter-spacing:0; color:#262626;">{{ meta.issue_date|long_date }}</span>
+          <td class="stack masthead-meta" valign="middle" align="right" width="50%" style="width:50%; text-align:right; font-family:Arial, Helvetica, sans-serif; font-size:13px; line-height:18px; color:#262626;">
+            {{ meta.issue_date|long_date }}
           </td>
         </tr>
       </table>

@@ -53,6 +53,14 @@ def test_test_copies_require_test_recipients(cfg):
         load_profile(TEST, cfg, env)
 
 
+def test_test_subjects_match_production_unless_a_prefix_is_set(cfg):
+    assert load_profile(TEST, cfg, SHARED_GMAIL).subject("The RankUno Brief") == "The RankUno Brief"
+    prefixed = load_profile(TEST, cfg, {**SHARED_GMAIL, "TEST_SUBJECT_PREFIX": "[TEST]"})
+    assert prefixed.subject("The RankUno Brief") == "[TEST] The RankUno Brief"
+    production = load_profile(PRODUCTION, cfg, {**SHARED_GMAIL, "TEST_SUBJECT_PREFIX": "[TEST]"})
+    assert production.subject("The RankUno Brief") == "The RankUno Brief"
+
+
 def test_production_sending_is_off_unless_switched_on(cfg):
     assert not load_profile(PRODUCTION, cfg, SHARED_GMAIL).send_enabled
     assert load_profile(PRODUCTION, cfg, {**SHARED_GMAIL, "PROD_SEND_ENABLED": "true"}).send_enabled

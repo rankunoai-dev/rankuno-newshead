@@ -15,7 +15,7 @@
 {% endmacro %}
 {{ cfg.name|upper }}
 {{ cfg.tagline }}
-Issue No. {{ meta.number }} | {{ meta.issue_date|long_date }}
+{{ meta.issue_date|long_date }}
 Coverage: {{ coverage }} | {{ content.story_count }} stories from {{ content.source_count }} sources
 
 {% if content.top_stories %}
