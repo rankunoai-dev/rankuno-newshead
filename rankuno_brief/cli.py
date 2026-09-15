@@ -140,7 +140,8 @@ def run_pipeline(cfg: Config, conn: sqlite3.Connection, *, test: bool, fetch: bo
     profile = load_profile(TEST if test else PRODUCTION, cfg) if send else None  # fail before a long fetch
     if fetch:
         cmd_fetch(cfg, conn, argparse.Namespace())  # if every source fails, the stored news is still built
-    issue_date = build_issue(cfg, conn)
+    target_date = datetime.now(cfg.newsletter.timezone).date() if test else None
+    issue_date = build_issue(cfg, conn, issue_date=target_date)
     if issue_date is None or profile is None:
         return 0 if issue_date else 1
     if not profile.send_enabled:
