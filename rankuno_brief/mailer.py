@@ -155,7 +155,7 @@ class GraphTransport:
             self._client.close()
 
     def send(self, message: EmailMessage) -> None:
-        body = base64.b64encode(message.as_bytes())
+        body = base64.b64encode(mime_bytes(message))
         url = self.SEND_URL.format(mailbox=quote(self._mailbox, safe="@"))
         reauthenticated = False
         for attempt in range(self._retries + 1):
@@ -239,6 +239,17 @@ def _retry_after(response: httpx.Response, *, default: float, cap: float) -> flo
 
 
 # Messages and delivery ---------------------------------------------------------------------------
+
+
+def mime_bytes(message: EmailMessage) -> bytes:
+    """The message exactly as it goes on the wire: CRLF line endings, as email standards and Microsoft Exchange require.
+
+    EmailMessage.as_bytes() uses bare LF line endings by default. Exchange and Outlook then misread every
+    quoted-printable line wrap ("=" at the end of a line) and drop the character after it, which garbles the
+    text ("=hursday", "&=bsp;") and breaks image and link addresses. smtplib converts to CRLF itself; Graph
+    and .eml files get these bytes.
+    """
+    return message.as_bytes(policy=message.policy.clone(linesep="\r\n"))
 
 
 def build_message(

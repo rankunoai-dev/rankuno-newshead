@@ -14,6 +14,7 @@ from email.utils import getaddresses, parseaddr
 from urllib.parse import urlsplit
 
 from .. import text
+from ..mailer import mime_bytes
 from .content import ContentGate
 from .dns import DnsError, DnsResolver
 from .findings import Finding, error, warning
@@ -93,6 +94,13 @@ def lint_message(message: EmailMessage, *, html_body: str, text_body: str, gate:
         findings.append(warning(check, f"Reply-To domain ({reply_domain}) differs from the sender ({from_domain})"))
     if not message["List-Unsubscribe"]:
         findings.append(warning(check, "No List-Unsubscribe header: people may use 'Report spam' instead"))
+
+    raw = mime_bytes(message)
+    if re.search(rb"(?<!\r)\n", raw):
+        findings.append(error(check, "The message has bare LF line endings; Outlook and Exchange would garble its text and images"))
+    longest = max(len(line) for line in raw.split(b"\r\n"))
+    if longest > 998:
+        findings.append(error(check, f"A line of the message is {longest} bytes; servers break lines over 998 bytes, garbling the email"))
 
     content_types = {part.get_content_type() for part in message.walk()}
     if "text/plain" not in content_types:

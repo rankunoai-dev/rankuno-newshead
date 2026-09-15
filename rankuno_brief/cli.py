@@ -17,7 +17,7 @@ from . import compose, db, enrich, google_news, render, slots
 from .config import Config, ConfigError, load_config
 from .fetch import run_fetch
 from .mail_profiles import PRODUCTION, TEST, MailProfile, load_profile
-from .mailer import MailError, RecipientRejected, build_message, deliver_issue
+from .mailer import MailError, RecipientRejected, build_message, deliver_issue, mime_bytes
 from .scoring import Scorer
 from .security import preflight
 from .security.content import Verdict, gate_for
@@ -225,7 +225,7 @@ def build_issue(cfg: Config, conn: sqlite3.Connection, *, issue_date: date | Non
     except ConfigError:
         profile = None
     eml = _message(cfg, profile, meta.subject, html_body, text_body, _preview_recipient(cfg))
-    (out_dir / "email.eml").write_bytes(eml.as_bytes())
+    (out_dir / "email.eml").write_bytes(mime_bytes(eml))
 
     db.save_issue(
         conn,
