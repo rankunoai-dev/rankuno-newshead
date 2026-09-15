@@ -1,0 +1,45 @@
+{% macro story_block(story, number) %}
+{{ number }}. {{ story.title }}
+   {{ story.source_name }} | {{ story.published_at|short_date }}
+{% if story.excerpt %}
+   {{ story.excerpt|wordwrap(72, wrapstring="\n   ") }}
+{% endif %}
+   {{ "Discussion" if story.is_discussion else "Article" }}: {{ story.url }}
+{% if story.via_name %}
+   Found via {{ story.via_name }}{% if story.via_url %}: {{ story.via_url }}{% endif %}
+
+{% endif %}
+{% if story.also_reported_by %}
+   Also reported by: {{ story.also_reported_by|map("first")|join(", ") }}
+{% endif %}
+{% endmacro %}
+{{ cfg.name|upper }}
+{{ cfg.tagline }}
+Issue No. {{ meta.number }} | {{ meta.issue_date|long_date }}
+Coverage: {{ coverage }} | {{ content.story_count }} stories from {{ content.source_count }} sources
+
+{% if content.top_stories %}
+========================================================================
+TOP STORIES
+========================================================================
+
+{% for story in content.top_stories %}
+{{ story_block(story, loop.index) }}
+{% endfor %}
+{% endif %}
+{% for section in content.sections %}
+========================================================================
+{{ section.title|upper }}
+========================================================================
+
+{% for story in section.stories %}
+{{ story_block(story, loop.index) }}
+{% endfor %}
+{% endfor %}
+------------------------------------------------------------------------
+{{ cfg.name }} is compiled from publicly available industry sources.
+{{ cfg.audience_note }} Headlines, summaries and images remain the
+property of their original publishers.
+To suggest a source or a topic, please reply to this email.
+
+RankUno | {{ cfg.brand_tagline }} | {{ cfg.website_url }}

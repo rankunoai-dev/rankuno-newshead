@@ -1,0 +1,403 @@
+# News sources. Every URL below was checked live (Phase 1 on 2026-09-13, Phase 2 on 2026-09-15).
+#
+#   type              rss (default) = a publisher's own feed. Aggregators, which point at other
+#                     publishers and show "Found via ...": reddit, techmeme, google_news,
+#                     google_alerts, hackernews
+#   url               feed URL (not needed for google_news or hackernews)
+#   query             google_news: search query; only the last 2 days are requested
+#   min_points        hackernews: only stories with at least this many points
+#   section           default section when no keyword decides (ids from taxonomy.yaml)
+#   weight            1.0 = normal; above 1 for official or highly reliable sources
+#   require_keywords  true = only include items that match at least one taxonomy keyword
+#                     (use for broad sources that also publish off-topic posts)
+#   min_coverage      stories need at least this many publishers covering them, unless the
+#                     publisher is in trusted_publishers (used for Google News, which also
+#                     surfaces content farms)
+#   community         true = discussion source; placed in "From the Community", never a top story
+#   max_per_issue     overrides issue.max_per_source for this source
+#   enabled           false = keep the entry but skip it
+
+# Publishers whose stories are dropped wherever they appear: names (case-insensitive) or domains.
+# Mostly press-release wires, which surface through Google News searches.
+exclude_publishers:
+  - EIN Presswire
+  - einpresswire.com
+  - PR Newswire
+  - prnewswire.com
+  - GlobeNewswire
+  - globenewswire.com
+  - Business Wire
+  - businesswire.com
+  - openPR
+  - openpr.com
+  - Newsfile
+  - newsfilecorp.com
+
+# Established publishers whose single report is enough (see min_coverage). Names as Google News
+# shows them, or domains.
+trusted_publishers:
+  # Wires, business and general news
+  - Reuters
+  - Associated Press
+  - AP News
+  - Bloomberg
+  - Bloomberg.com
+  - The Wall Street Journal
+  - WSJ
+  - Financial Times
+  - The New York Times
+  - The Washington Post
+  - The Guardian
+  - BBC
+  - CNBC
+  - CNN
+  - Axios
+  - Semafor
+  - Fortune
+  - Business Insider
+  - The Economist
+  # Technology
+  - The Verge
+  - TechCrunch
+  - Wired
+  - WIRED
+  - Ars Technica
+  - Engadget
+  - The Information
+  - VentureBeat
+  - ZDNET
+  - The Register
+  - 9to5Google
+  - 9to5Mac
+  - MacRumors
+  - Android Authority
+  - GeekWire
+  # Search, marketing and advertising trade press
+  - Search Engine Land
+  - Search Engine Journal
+  - Search Engine Roundtable
+  - PPC Land
+  - MarTech
+  - Digiday
+  - AdExchanger
+  - Adweek
+  - Ad Age
+  - Marketing Dive
+  - The Drum
+  - Campaign
+  - MediaPost
+  - Social Media Today
+  - Marketing Week
+
+sources:
+  # Official sources
+  - id: google-search-central
+    name: Google Search Central Blog
+    url: https://developers.google.com/search/blog/feed.xml
+    section: seo
+    weight: 1.6
+
+  - id: google-search-status
+    name: Google Search Status Dashboard
+    url: https://status.search.google.com/en/feed.atom
+    section: seo
+    weight: 1.8
+
+  - id: google-search-blog
+    name: Google Search Blog
+    url: https://blog.google/products/search/rss/
+    section: ai_search
+    weight: 1.4
+
+  - id: google-ai-blog
+    name: Google AI Blog
+    url: https://blog.google/technology/ai/rss/
+    section: ai_platforms
+    weight: 1.3
+
+  - id: google-ads-commerce
+    name: Google Ads & Commerce Blog
+    url: https://blog.google/products/ads-commerce/rss/
+    section: paid_media
+    weight: 1.4
+
+  - id: bing-search-blog
+    name: Bing Search Blog
+    url: https://blogs.bing.com/search/feed
+    section: seo
+    weight: 1.3
+
+  - id: bing-webmaster-blog
+    name: Bing Webmaster Blog
+    url: https://blogs.bing.com/webmaster/feed
+    section: seo
+    weight: 1.3
+
+  - id: openai-news
+    name: OpenAI News
+    url: https://openai.com/news/rss.xml
+    section: ai_platforms
+    weight: 1.3
+    require_keywords: true
+
+  - id: meta-newsroom
+    name: Meta Newsroom
+    url: https://about.fb.com/feed/
+    section: paid_media
+    weight: 1.1
+    require_keywords: true
+
+  # Search industry news
+  - id: search-engine-land
+    name: Search Engine Land
+    url: https://searchengineland.com/feed
+    section: seo
+    weight: 1.3
+
+  - id: search-engine-journal
+    name: Search Engine Journal
+    url: https://www.searchenginejournal.com/feed/
+    section: seo
+    weight: 1.2
+
+  - id: search-engine-roundtable
+    name: Search Engine Roundtable
+    url: https://www.seroundtable.com/index.xml
+    section: seo
+    weight: 1.3
+
+  - id: ppc-land
+    name: PPC Land
+    url: https://ppc.land/rss/
+    section: paid_media
+    weight: 1.0
+    max_per_issue: 3
+
+  # Expert analysis
+  - id: growth-memo
+    name: Growth Memo (Kevin Indig)
+    url: https://www.growth-memo.com/feed
+    section: ai_search
+    weight: 1.2
+
+  - id: ipullrank
+    name: iPullRank
+    url: https://ipullrank.com/feed
+    section: ai_search
+    weight: 1.1
+
+  - id: lily-ray
+    name: Lily Ray
+    url: https://lilyraynyc.substack.com/feed
+    section: ai_search
+    weight: 1.1
+
+  - id: marie-haynes
+    name: Marie Haynes
+    url: https://www.mariehaynes.com/feed/
+    section: ai_search
+    weight: 1.0
+
+  - id: moz-blog
+    name: Moz Blog
+    url: https://moz.com/posts/rss/blog
+    section: seo
+    weight: 0.9
+    require_keywords: true
+
+  - id: ahrefs-blog
+    name: Ahrefs Blog
+    url: https://ahrefs.com/blog/feed/
+    section: seo
+    weight: 0.9
+    require_keywords: true
+
+  - id: semrush-blog
+    name: Semrush Blog
+    url: https://www.semrush.com/blog/feed/
+    section: seo
+    weight: 0.8
+    require_keywords: true
+
+  # Marketing, MarTech and media
+  - id: martech
+    name: MarTech
+    url: https://martech.org/feed/
+    section: martech_analytics
+    weight: 1.1
+
+  - id: hubspot-marketing
+    name: HubSpot Marketing Blog
+    url: https://blog.hubspot.com/marketing/rss.xml
+    section: content_social
+    weight: 0.7
+    require_keywords: true
+
+  - id: social-media-today
+    name: Social Media Today
+    url: https://www.socialmediatoday.com/feeds/news/
+    section: content_social
+    weight: 1.0
+
+  - id: digiday
+    name: Digiday
+    url: https://digiday.com/feed/
+    section: media_demand
+    weight: 1.0
+    require_keywords: true
+
+  - id: adweek
+    name: Adweek
+    url: https://www.adweek.com/feed/
+    section: media_demand
+    weight: 1.0
+    require_keywords: true
+
+  - id: adexchanger
+    name: AdExchanger
+    url: https://www.adexchanger.com/feed/
+    section: media_demand
+    weight: 1.0
+    require_keywords: true
+    # Returns HTTP 403 to Python clients regardless of headers (curl gets through), most likely
+    # connection-level bot filtering. Its stories still arrive through the Google News searches below.
+    enabled: false
+
+  # Technology and AI news
+  - id: techcrunch-ai
+    name: TechCrunch (AI)
+    url: https://techcrunch.com/category/artificial-intelligence/feed/
+    section: ai_platforms
+    weight: 1.0
+    require_keywords: true
+
+  - id: the-verge-ai
+    name: The Verge (AI)
+    url: https://www.theverge.com/rss/ai-artificial-intelligence/index.xml
+    section: ai_platforms
+    weight: 0.9
+    require_keywords: true
+
+  - id: ars-technica-ai
+    name: Ars Technica (AI)
+    url: https://arstechnica.com/ai/feed/
+    section: ai_platforms
+    weight: 0.9
+    require_keywords: true
+
+  - id: wired-ai
+    name: Wired (AI)
+    url: https://www.wired.com/feed/tag/ai/latest/rss
+    section: ai_platforms
+    weight: 0.8
+    require_keywords: true
+
+  - id: venturebeat-ai
+    name: VentureBeat (AI)
+    url: https://venturebeat.com/category/ai/feed/
+    section: ai_platforms
+    weight: 0.9
+    require_keywords: true
+    # Answers HTTP 429 (rate limited) to every request as of 2026-09-15. Retry later.
+    enabled: false
+
+  - id: techmeme
+    name: Techmeme
+    type: techmeme
+    url: https://www.techmeme.com/feed.xml
+    section: ai_platforms
+    weight: 1.1
+    require_keywords: true
+
+  # Google News searches: hot stories from any publisher, not only the feeds above
+  - id: google-news-ai-search
+    name: "Google News: AI search"
+    type: google_news
+    query: '"AI Overviews" OR "AI Mode" OR "generative engine optimization" OR "ChatGPT search" OR "AI search"'
+    section: ai_search
+    weight: 0.9
+    require_keywords: true
+    max_per_issue: 2
+    min_coverage: 2
+
+  - id: google-news-seo
+    name: "Google News: SEO updates"
+    type: google_news
+    query: '"core update" OR "algorithm update" OR "Google Search Console" OR "Google Discover" OR "search rankings"'
+    section: seo
+    weight: 0.9
+    require_keywords: true
+    max_per_issue: 2
+    min_coverage: 2
+
+  - id: google-news-paid-media
+    name: "Google News: paid media"
+    type: google_news
+    query: '"Google Ads" OR "Performance Max" OR "Meta ads" OR "Amazon Ads" OR "ChatGPT ads" OR "retail media"'
+    section: paid_media
+    weight: 0.9
+    require_keywords: true
+    max_per_issue: 2
+    min_coverage: 2
+
+  - id: google-news-ai-platforms
+    name: "Google News: AI platforms"
+    type: google_news
+    query: 'OpenAI OR Anthropic OR "Google Gemini" OR Perplexity OR "Microsoft Copilot"'
+    section: ai_platforms
+    weight: 0.8
+    require_keywords: true
+    max_per_issue: 2
+    min_coverage: 2
+
+  - id: google-news-martech
+    name: "Google News: MarTech"
+    type: google_news
+    query: 'martech OR "marketing automation" OR "customer data platform" OR "Google Analytics" OR "programmatic advertising"'
+    section: martech_analytics
+    weight: 0.8
+    require_keywords: true
+    max_per_issue: 2
+    min_coverage: 2
+
+  # Community
+  # Reddit rate-limits separate requests for each subreddit, so they are combined into one feed.
+  - id: reddit
+    name: Reddit
+    type: reddit
+    url: https://www.reddit.com/r/SEO+bigseo+PPC+marketing/top/.rss?t=week
+    section: community
+    community: true
+    max_per_issue: 3
+
+  - id: hacker-news
+    name: Hacker News
+    type: hackernews
+    min_points: 50
+    section: community
+    community: true
+    require_keywords: true
+    max_per_issue: 2
+
+  # Quora through Google Alerts. Google Alerts has no API, so each alert is created by hand at
+  # https://www.google.com/alerts (signed in as rankuno@gmail.com), with "Deliver to: RSS feed".
+  # Paste each alert's RSS link as the url below and set enabled: true.
+  - id: quora-ai-search
+    name: "Quora: AI search"
+    type: google_alerts
+    url: https://www.google.com/alerts/feeds/REPLACE_WITH_FEED_LINK
+    section: community
+    community: true
+    require_keywords: true
+    max_per_issue: 2
+    enabled: false
+
+  - id: quora-seo-paid
+    name: "Quora: SEO and paid media"
+    type: google_alerts
+    url: https://www.google.com/alerts/feeds/REPLACE_WITH_FEED_LINK
+    section: community
+    community: true
+    require_keywords: true
+    max_per_issue: 2
+    enabled: false

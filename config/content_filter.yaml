@@ -1,0 +1,194 @@
+# Content filter: the words and links that keep a story out of The RankUno Brief.
+#
+# NOTE: this file necessarily lists offensive words so they can be filtered. It is configuration,
+# not content, and is never included in an email.
+#
+# Every story's headline, summary and links are checked before the story can be selected, and the
+# finished email is checked again before it is saved and before it is sent.
+#
+#   action: block   never published. Not overridable; a false positive is fixed with allow_phrases.
+#   action: hold    left out unless an editor approves that story:
+#                     python -m rankuno_brief security review
+#                     python -m rankuno_brief security approve <id>
+#
+# Term syntax (case-insensitive, whole words):
+#   word        the word or phrase exactly; spaces and hyphens are interchangeable ("self-harm" = "self harm")
+#   word*       any word starting with it ("murder*" = murders, murdered, murderer)
+#
+# Disguised spellings are caught automatically: f*ck, sh1t, $hit, f u c k, fuuuck, accented letters
+# and invisible characters.
+#
+# Test any text against this file:  python -m rankuno_brief security scan "some headline"
+#
+# Prefer specific terms over broad ones: marketing news uses many violent metaphors ("Google kills
+# a feature", "price war", "killer app", "site reputation abuse"), so words like kill, war, abuse,
+# attack, dead and shooting on their own are deliberately NOT listed.
+
+categories:
+  # ---- Blocked ---------------------------------------------------------------------------------
+
+  - id: profanity
+    action: block
+    terms: [
+      fuck*, motherfuck*, "f-bomb", shit, shits, shitty, shithole*, shitshow*, shitpost*, bullshit*, horseshit,
+      bitch, bitches, bitchy, cunt*, asshole*, arsehole*, dickhead*, dickwad*, wanker*, twat*,
+      cocksuck*, jackass*, dumbass*, slut*, whore*, pussy, pussies, dipshit*, goddamn*, douchebag*,
+      # Hindi / Hinglish abuse
+      bhenchod, behenchod, benchod, madarchod, maderchod, chutiya*, chutiye, bhosdi*, bhosdike, gandu,
+      "teri maa ki", lodu, lavde, lawde,
+    ]
+
+  - id: slurs
+    action: block
+    terms: [
+      nigger*, nigga*, faggot*, fag, fags, dyke, dykes, tranny, trannies, retard, retards, retarded,
+      chink, chinks, gook, gooks, kike, kikes, spic, spics, wetback*, raghead*, towelhead*, paki, pakis,
+      coon, coons, beaner, beaners, jap, japs, golliwog*, halfbreed*, "half-breed", shemale*,
+      chamar, chamars, bhangi,
+    ]
+
+  - id: sexual_explicit
+    action: block
+    terms: [
+      blowjob*, "blow job", handjob*, "hand job", cumshot*, gangbang*, hentai, milf*, dildo*, orgasm*,
+      masturbat*, "sex tape", "sex video", "leaked nudes", nudes, incest*, bestiality, "child porn*",
+      csam, pedophil*, paedophil*, "child sexual abuse", rape, raped, rapes, raping, rapist*,
+    ]
+
+  - id: graphic_violence
+    action: block
+    terms: [
+      behead*, decapitat*, dismember*, mutilat*, "gore video*", "snuff film*", lynching*, lynched,
+      "torture video*", "execution video*", "kill yourself", "kill urself", kys, "how to commit suicide",
+    ]
+
+  # ---- Held for an editor ------------------------------------------------------------------------
+
+  - id: adult_themes
+    action: hold
+    terms: [
+      porn, porno, porns, pornography, pornographic, pornhub, onlyfans, xxx, nsfw, nude, nudity, naked,
+      sex, sexual, sexually, sexy, erotic*, "escort service*", "strip club*", "adult content",
+      "adult entertainment", "adult website*", "sex worker*", "sexual harassment", "sexual assault",
+      "sexually explicit", "deepfake porn*",
+    ]
+
+  - id: violence_crime
+    action: hold
+    terms: [
+      murder*, homicide*, massacre*, "mass shooting*", "school shooting*", gunman, gunmen, "shot dead",
+      "shot and killed", stabbing*, assassinat*, terror*, bombing*, "suicide bomb*", hostage*, kidnap*,
+      trafficking, "child abuse", "domestic violence", "hate crime*", "war crime*", genocide*,
+      "ethnic cleansing", torture*, "people killed", "police shooting*", "death threat*",
+    ]
+
+  - id: self_harm
+    action: hold
+    terms: [suicide*, suicidal, "self-harm", "self-harming", "eating disorder*", overdose*, anorexia, bulimia]
+
+  - id: war_disaster
+    action: hold
+    terms: [
+      airstrike*, "air strike*", "missile strike*", "drone strike*", "death toll", "war zone",
+      "bomb blast*", "plane crash*", "terror attack*", "ukraine war", "russia-ukraine war", "war in ukraine",
+      "war in gaza", gaza, hamas, hezbollah, "israel-hamas*",
+    ]
+
+  - id: hate_extremism
+    action: hold
+    terms: [
+      nazi, nazis, "neo-nazi*", "white supremac*", kkk, "ku klux klan", jihad*, isis, extremist*, extremism,
+      antisemit*, islamophob*, racist, racists, racism, "hate speech", "hate group*", homophob*, transphob*,
+      misogyn*, xenophob*, bigot*,
+    ]
+
+  - id: drugs_weapons_gambling
+    action: hold
+    terms: [
+      cocaine, heroin, meth, methamphetamine, fentanyl, "illegal drug*", marijuana, cannabis, firearm*,
+      "assault rifle*", casino*, gambling, "sports betting", "online betting", "betting app*",
+      "betting site*",
+    ]
+
+  - id: politics_religion
+    action: hold
+    terms: [
+      election, elections, "political ad*", "political advertising", "political campaign*", politician*,
+      trump, biden, "kamala harris", modi, "narendra modi", bjp, "congress party", "rahul gandhi",
+      republican, republicans, democrat, democrats, "democratic party", gop, maga, religion, religious,
+      blasphem*, "communal violence", "communal riot*", caste, casteist, hindutva, khalistan*,
+    ]
+
+  - id: mild_profanity
+    action: hold
+    terms: [
+      damn, dammit, crap, crappy, wtf, wth, omfg, stfu, piss, pissed, sucks, screwed, "screw you",
+      freaking, frickin, fricking, effing, bastard, bastards, idiot*, moron*, stupid, "dumb as",
+    ]
+
+  # Headlines that would read as spam to Gmail and Outlook filters.
+  - id: spam_risk
+    action: hold
+    terms: [
+      viagra, cialis, "casino bonus", "free money", "make money fast", "make money online",
+      "get rich quick", "100% free", "risk-free", "risk free", "act now", "click here",
+      "limited time offer", "buy now", "order now", "you've won", "claim your prize",
+      "claim your reward", "free gift", "crypto giveaway", "double your money", "no credit check",
+      "cash prize", "lowest price", "weight loss", "diet pill*", "payday loan*", "cheap meds", "$$$",
+    ]
+
+# Phrases that contain a listed term but are harmless. They are removed before the check.
+allow_phrases:
+  - chink in the armor
+  - chink in the armour
+  - chink in its armor
+  - chink in its armour
+  - trump card
+  - naked domain*       # SEO: a domain without www
+  - naked url*
+  - naked link*
+  - buy now pay later   # "Buy now, pay later" (BNPL) is retail and commerce news
+  - buy now, pay later
+
+# Stories that link to these sites (or their subdomains) are blocked.
+blocked_domains:
+  - pornhub.com
+  - xvideos.com
+  - xnxx.com
+  - xhamster.com
+  - redtube.com
+  - youporn.com
+  - onlyfans.com
+  - fansly.com
+  - 4chan.org
+  - 4channel.org
+  - 8kun.top
+  - kiwifarms.net
+  - stormfront.org
+  - bestgore.com
+
+# Link shorteners hide the real destination and are one of the strongest spam signals, so stories
+# whose link goes through one are blocked.
+url_shorteners:
+  - bit.ly
+  - bitly.com
+  - tinyurl.com
+  - t.co
+  - goo.gl
+  - ow.ly
+  - is.gd
+  - buff.ly
+  - rebrand.ly
+  - cutt.ly
+  - shorturl.at
+  - tiny.cc
+  - rb.gy
+  - bl.ink
+  - lnkd.in
+  - dlvr.it
+  - soo.gd
+  - s.id
+  - v.gd
+  - t.ly
+  - shorte.st
+  - adf.ly

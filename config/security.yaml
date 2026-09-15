@@ -1,0 +1,39 @@
+# Security layer for The RankUno Brief. Nothing reaches an inbox without passing all of it:
+#
+#   1. Content screen   every story is checked before it can be selected (terms: content_filter.yaml)
+#   2. Output gate      the finished email is checked again after build and again just before sending
+#   3. Recipients       only valid, allowed, reachable and non-suppressed addresses receive an issue
+#   4. Deliverability   spam-signal checks on the message, plus SPF / DKIM / DMARC of the sender domain
+#
+# Run `python -m rankuno_brief security check` at any time to see the full report without sending.
+
+content:
+  # Reddit and other community sources are user-generated: never show their images.
+  community_images: false
+
+recipients:
+  # Addresses are read from delivery.recipients_file (settings.yaml). An address is accepted only if
+  # its domain is listed here or the full address is listed under allowed_addresses. Use "*" to
+  # allow any domain (for example once client editions exist).
+  allowed_domains:
+    - rankuno.com
+  allowed_addresses:
+    - forselfrajat58615@gmail.com   # test inbox
+  # A send is refused outright when the list is longer than this: it protects against a pasted
+  # wrong list, and Gmail SMTP accounts stop sending after about 500 recipients a day.
+  max_recipients: 450
+  # Refuse addresses whose domain has no mail server (bounces damage the sender's reputation).
+  check_mx: true
+  # Permanent rejections (SMTP 5xx, e.g. "mailbox does not exist") before an address is suppressed.
+  # Re-enable one with: python -m rankuno_brief security unsuppress someone@rankuno.com
+  suppress_after_hard_failures: 2
+
+sending:
+  # Pause between messages. Microsoft 365 allows 30 messages a minute; Gmail throttles bursts.
+  delay_seconds: 2.5
+  # Optional Reply-To address. Empty = replies go to the sender (MAIL_FROM).
+  reply_to: ""
+  # Adds a List-Unsubscribe header (mailto). Gmail and Outlook then show their own "Unsubscribe"
+  # link, which people use instead of "Report spam". Requests arrive in this mailbox (empty = sender).
+  list_unsubscribe: true
+  unsubscribe_mailbox: ""

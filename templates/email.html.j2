@@ -1,0 +1,279 @@
+{#
+  The RankUno Brief: email template.
+
+  Built for Outlook desktop (Word rendering engine) as well as Outlook web, Gmail and mobile:
+  table layout, inline styles, padding only on <td>, fixed image widths, no web fonts in Outlook,
+  and a layout that still reads well when images are blocked.
+  Brand: RankUno red #DF212A, charcoal #262626, grey #707070.
+#}
+{% macro kicker(story) %}
+<tr>
+  <td style="font-family:Arial, Helvetica, sans-serif; font-size:11px; line-height:16px; letter-spacing:1px; font-weight:bold; color:#DF212A;">
+    {{ story.source_name|upper }}<span style="font-weight:normal; color:#707070;">&nbsp;&nbsp;&middot;&nbsp;&nbsp;{{ story.published_at|short_date|upper }}</span>
+  </td>
+</tr>
+{% endmacro %}
+
+{% macro story_links(story) %}
+<tr>
+  <td style="padding-top:10px; font-family:Arial, Helvetica, sans-serif; font-size:13px; line-height:20px;">
+    <a href="{{ story.url }}" style="color:#DF212A; font-weight:bold; text-decoration:none;">{{ "Read the discussion" if story.is_discussion else "Read full article" }}&nbsp;&rsaquo;</a>
+    {% if story.via_name %}
+    <span style="color:#BDBDBD;">&nbsp;&nbsp;|&nbsp;&nbsp;</span>{% if story.via_url %}<a href="{{ story.via_url }}" style="color:#707070; text-decoration:underline;">Found via {{ story.via_name }}</a>{% else %}<span style="color:#707070;">Found via {{ story.via_name }}</span>{% endif %}
+    {% endif %}
+  </td>
+</tr>
+{% if story.also_reported_by %}
+<tr>
+  <td style="padding-top:4px; font-family:Arial, Helvetica, sans-serif; font-size:12px; line-height:18px; color:#707070;">
+    Also reported by:
+    {% for name, url in story.also_reported_by %}<a href="{{ url }}" style="color:#707070; text-decoration:underline;">{{ name }}</a>{{ ", " if not loop.last }}{% endfor %}
+  </td>
+</tr>
+{% endif %}
+{% endmacro %}
+
+{% macro section_heading(title) %}
+<tr>
+  <td class="px" style="padding:34px 36px 20px 36px;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+      <tr>
+        <td style="border-left:4px solid #DF212A; padding:1px 0 1px 12px; font-family:Montserrat, Arial, Helvetica, sans-serif; font-size:14px; line-height:18px; font-weight:bold; letter-spacing:1.5px; color:#262626;">{{ title|upper }}</td>
+      </tr>
+    </table>
+  </td>
+</tr>
+{% endmacro %}
+
+{% macro divider(show) %}
+<tr><td class="px" style="padding:20px 36px 20px 36px;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+    <tr><td style="{% if show %}border-top:1px solid #E6E6E6; {% endif %}font-size:1px; line-height:1px; mso-line-height-rule:exactly;">&nbsp;</td></tr>
+  </table>
+</td></tr>
+{% endmacro %}
+
+{% macro lead_story(story, last) %}
+<tr>
+  <td class="px" style="padding:0 36px;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+      {% if story.image_url %}
+      <tr>
+        <td style="padding-bottom:18px;">
+          <img src="{{ story.image_url }}" width="568" alt="" style="display:block; width:100%; max-width:568px; height:auto; border:0;">
+        </td>
+      </tr>
+      {% endif %}
+      {{ kicker(story) }}
+      <tr>
+        <td style="padding-top:6px; font-family:Montserrat, Arial, Helvetica, sans-serif; font-size:21px; line-height:28px; font-weight:bold;">
+          <a href="{{ story.url }}" style="color:#262626; text-decoration:none;">{{ story.title }}</a>
+        </td>
+      </tr>
+      {% if story.excerpt %}
+      <tr>
+        <td style="padding-top:8px; font-family:Arial, Helvetica, sans-serif; font-size:15px; line-height:24px; color:#404040;">{{ story.excerpt }}</td>
+      </tr>
+      {% endif %}
+      {{ story_links(story) }}
+    </table>
+  </td>
+</tr>
+{{ divider(not last) }}
+{% endmacro %}
+
+{% macro story_row(story, last) %}
+<tr>
+  <td class="px" style="padding:0 36px;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+      <tr>
+        {% if story.image_url %}
+        <td class="stack thumb-cell" width="170" valign="top" style="width:170px; padding:4px 20px 0 0;">
+          <img class="thumb-img" src="{{ story.image_url }}" width="150" alt="" style="display:block; width:150px; height:auto; border:0;">
+        </td>
+        {% endif %}
+        <td class="stack" valign="top">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+            {{ kicker(story) }}
+            <tr>
+              <td style="padding-top:5px; font-family:Montserrat, Arial, Helvetica, sans-serif; font-size:16px; line-height:22px; font-weight:bold;">
+                <a href="{{ story.url }}" style="color:#262626; text-decoration:none;">{{ story.title }}</a>
+              </td>
+            </tr>
+            {% if story.excerpt %}
+            <tr>
+              <td style="padding-top:6px; font-family:Arial, Helvetica, sans-serif; font-size:14px; line-height:22px; color:#404040;">{{ story.excerpt }}</td>
+            </tr>
+            {% endif %}
+            {{ story_links(story) }}
+          </table>
+        </td>
+      </tr>
+    </table>
+  </td>
+</tr>
+{{ divider(not last) }}
+{% endmacro %}
+
+{% macro toc_row(title, count, last) %}
+<tr>
+  <td style="padding:0 22px;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+      <tr>
+        <td style="padding:8px 0; {% if not last %}border-bottom:1px solid #E6E6E6; {% endif %}font-family:Arial, Helvetica, sans-serif; font-size:14px; line-height:20px; color:#404040;">{{ title }}</td>
+        <td align="right" style="padding:8px 0; {% if not last %}border-bottom:1px solid #E6E6E6; {% endif %}font-family:Arial, Helvetica, sans-serif; font-size:13px; line-height:20px; color:#707070; text-align:right;">{{ count }}</td>
+      </tr>
+    </table>
+  </td>
+</tr>
+{% endmacro %}
+<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="x-apple-disable-message-reformatting">
+<meta name="format-detection" content="telephone=no, date=no, address=no, email=no">
+<meta name="color-scheme" content="light">
+<meta name="supported-color-schemes" content="light">
+<title>{{ meta.subject }}</title>
+<!--[if mso]>
+<noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript>
+<style>table, td, div, p, a, span { font-family: Arial, Helvetica, sans-serif !important; }</style>
+<![endif]-->
+<style>
+  body { margin: 0; padding: 0; width: 100% !important; -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
+  table { border-collapse: collapse; mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
+  img { border: 0; outline: none; text-decoration: none; -ms-interpolation-mode: bicubic; }
+  @media only screen and (max-width: 660px) {
+    .container { width: 100% !important; }
+    .px { padding-left: 20px !important; padding-right: 20px !important; }
+    .stack { display: block !important; width: 100% !important; }
+    .thumb-cell { padding: 0 0 14px 0 !important; }
+    .thumb-img { width: 100% !important; max-width: 100% !important; height: auto !important; }
+    .masthead-meta { text-align: left !important; padding-top: 14px !important; }
+    .issue-title { font-size: 24px !important; line-height: 30px !important; }
+  }
+</style>
+</head>
+<body style="margin:0; padding:0; background-color:#F2F2F2;">
+<div style="display:none; max-height:0; max-width:0; overflow:hidden; mso-hide:all; font-size:1px; line-height:1px; color:#F2F2F2; opacity:0;">{{ preheader }}&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;</div>
+
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F2F2F2;">
+<tr>
+<td align="center" style="padding:24px 10px;">
+<!--[if mso]><table role="presentation" width="640" align="center" cellpadding="0" cellspacing="0" border="0"><tr><td><![endif]-->
+<table role="presentation" class="container" width="640" cellpadding="0" cellspacing="0" border="0" style="width:640px; max-width:640px; background-color:#FFFFFF; border:1px solid #E6E6E6;">
+
+  <tr><td style="background-color:#DF212A; height:5px; font-size:5px; line-height:5px; mso-line-height-rule:exactly;">&nbsp;</td></tr>
+
+  {# Masthead #}
+  <tr>
+    <td class="px" style="padding:28px 36px 0 36px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+        <tr>
+          <td class="stack" valign="middle" width="50%" style="width:50%;">
+            <a href="{{ cfg.website_url }}"><img src="{{ images.logo }}" width="150" height="58" alt="RankUno" style="display:block; width:150px; height:58px; border:0; font-family:Arial, Helvetica, sans-serif; font-size:20px; font-weight:bold; color:#DF212A;"></a>
+          </td>
+          <td class="stack masthead-meta" valign="middle" align="right" width="50%" style="width:50%; text-align:right; font-family:Arial, Helvetica, sans-serif; font-size:11px; line-height:18px; letter-spacing:1px; color:#707070;">
+            ISSUE NO. {{ meta.number }}<br>
+            <span style="font-size:13px; letter-spacing:0; color:#262626;">{{ meta.issue_date|long_date }}</span>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+  <tr>
+    <td class="px issue-title" style="padding:28px 36px 0 36px; font-family:Montserrat, Arial, Helvetica, sans-serif; font-size:28px; line-height:34px; font-weight:bold; color:#262626;">{{ cfg.name }}</td>
+  </tr>
+  <tr>
+    <td class="px" style="padding:6px 36px 0 36px; font-family:Arial, Helvetica, sans-serif; font-size:12px; line-height:16px; font-weight:bold; letter-spacing:2px; color:#DF212A;">{{ cfg.tagline|upper }}</td>
+  </tr>
+  <tr>
+    <td class="px" style="padding:18px 36px 0 36px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+        <tr><td style="border-top:1px solid #E6E6E6; padding-top:12px; font-family:Arial, Helvetica, sans-serif; font-size:12px; line-height:18px; color:#707070;">
+          Coverage: {{ coverage }}&nbsp;&nbsp;&middot;&nbsp;&nbsp;{{ content.story_count }} stories from {{ content.source_count }} sources
+        </td></tr>
+      </table>
+    </td>
+  </tr>
+
+  {# In this issue #}
+  <tr>
+    <td class="px" style="padding:24px 36px 0 36px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F7F7F7;">
+        <tr>
+          <td style="padding:18px 22px 6px 22px; font-family:Montserrat, Arial, Helvetica, sans-serif; font-size:11px; line-height:16px; font-weight:bold; letter-spacing:1.5px; color:#262626;">IN THIS ISSUE</td>
+        </tr>
+        {% if content.top_stories %}
+        {{ toc_row("Top Stories", content.top_stories|length, not content.sections) }}
+        {% endif %}
+        {% for section in content.sections %}
+        {{ toc_row(section.title, section.stories|length, loop.last) }}
+        {% endfor %}
+        <tr><td style="height:12px; font-size:1px; line-height:1px;">&nbsp;</td></tr>
+      </table>
+    </td>
+  </tr>
+
+  {# Top stories #}
+  {% if content.top_stories %}
+  {{ section_heading("Top Stories") }}
+  {{ lead_story(content.top_stories[0], content.top_stories|length == 1) }}
+  {% for story in content.top_stories[1:] %}
+  {{ story_row(story, loop.last) }}
+  {% endfor %}
+  {% endif %}
+
+  {# Sections #}
+  {% for section in content.sections %}
+  {{ section_heading(section.title) }}
+  {% for story in section.stories %}
+  {{ story_row(story, loop.last) }}
+  {% endfor %}
+  {% endfor %}
+
+  {# Footer #}
+  <tr><td style="height:16px; font-size:1px; line-height:1px;">&nbsp;</td></tr>
+  <tr>
+    <td class="px" style="background-color:#262626; padding:30px 36px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+        <tr>
+          <td style="padding-bottom:16px;">
+            <a href="{{ cfg.website_url }}"><img src="{{ images.logo_white }}" width="120" height="46" alt="RankUno" style="display:block; width:120px; height:46px; border:0; font-family:Arial, Helvetica, sans-serif; font-size:16px; font-weight:bold; color:#FFFFFF;"></a>
+          </td>
+        </tr>
+        <tr>
+          <td style="font-family:Arial, Helvetica, sans-serif; font-size:12px; line-height:19px; color:#BDBDBD;">
+            {{ cfg.name }} is compiled from publicly available industry sources. {{ cfg.audience_note }}
+            Headlines, summaries and images remain the property of their original publishers; please refer to the linked articles for full context.
+          </td>
+        </tr>
+        <tr>
+          <td style="padding-top:12px; font-family:Arial, Helvetica, sans-serif; font-size:12px; line-height:19px; color:#BDBDBD;">
+            To suggest a source or a topic for coverage, please reply to this email.
+          </td>
+        </tr>
+        <tr>
+          <td style="padding-top:18px;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+              <tr><td style="border-top:1px solid #3D3D3D; padding-top:16px; font-family:Arial, Helvetica, sans-serif; font-size:12px; line-height:19px; color:#BDBDBD;">
+                <span style="color:#FFFFFF;">RankUno</span>&nbsp;&nbsp;&middot;&nbsp;&nbsp;{{ cfg.brand_tagline }}&nbsp;&nbsp;&middot;&nbsp;&nbsp;<a href="{{ cfg.website_url }}" style="color:#FFFFFF; text-decoration:underline;">rankuno.com</a>
+              </td></tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+</table>
+<!--[if mso]></td></tr></table><![endif]-->
+</td>
+</tr>
+</table>
+</body>
+</html>

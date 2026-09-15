@@ -1,0 +1,40 @@
+# General settings for The RankUno Brief.
+# All times are local to `newsletter.timezone`.
+
+newsletter:
+  name: The RankUno Brief
+  tagline: Search, AI & Marketing Intelligence
+  timezone: Asia/Kolkata
+  website_url: https://rankuno.com/
+  # Logos are embedded in each email (not loaded from the website), so they always display
+  # and never depend on rankuno.com being reachable. Paths are relative to the project folder.
+  logo_path: assets/rankuno-logo.png
+  logo_white_path: assets/rankuno-logo-white.png
+  brand_tagline: Crafting Success Stories. Digitally.
+  audience_note: Prepared for internal circulation within RankUno.
+  # Daily fetch time and issue send slots. The scheduler that uses fetch_time arrives in Phase 6;
+  # send_slots already decide which issue date a build belongs to.
+  fetch_time: "06:00"
+  send_slots: ["Mon 09:00", "Thu 09:00"]
+
+issue:
+  max_stories: 24          # total stories per issue, top stories included
+  max_per_section: 5
+  max_per_source: 4        # a source can override this with max_per_issue
+  top_stories: 3
+  min_score: 1.0           # stories scoring below this are left out
+  first_issue_lookback_days: 4
+  grace_hours: 24          # also consider items published this long before the window opens
+
+fetch:
+  timeout_seconds: 20
+  retries: 3
+  max_workers: 8
+  same_host_delay_seconds: 4   # pause between requests to the same site (Reddit rate-limits)
+  max_item_age_days: 14        # ignore older entries in long feeds
+  # Some sites (e.g. AdExchanger) reject user agents without the "Mozilla/5.0 (compatible; ...)" form.
+  user_agent: "Mozilla/5.0 (compatible; RankUnoBrief/0.1; +https://rankuno.com/)"
+
+delivery:
+  recipients:
+    - forselfrajat58615@gmail.com

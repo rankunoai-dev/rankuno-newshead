@@ -1,0 +1,241 @@
+# Sections of the newsletter, in the order they appear, with the keywords that route a story
+# into each one. Keywords match whole words, case-insensitively. A keyword found in the title
+# counts three times its weight; found only in the summary it counts once.
+#
+# A section's weight multiplies its keyword score, so AI search wins ties with general SEO.
+
+sections:
+  - id: ai_search
+    title: AI Search & GEO
+    weight: 1.5
+    keywords:
+      AI Overviews: 3
+      AI Overview: 3
+      AI Mode: 3
+      generative engine optimization: 3
+      GEO: 2
+      answer engine: 2
+      AEO: 2
+      LLM visibility: 3
+      AI visibility: 2.5
+      AI search: 2.5
+      ChatGPT search: 3
+      SearchGPT: 3
+      Perplexity: 2
+      AI citations: 2.5
+      llms.txt: 3
+      zero-click: 2
+      AI crawler: 2
+      AI crawlers: 2
+      GPTBot: 2.5
+      AI traffic: 2
+      AI referrals: 2
+      agentic search: 2.5
+      AI assistants: 1.5
+
+  - id: ai_platforms
+    title: AI Platforms & Models
+    weight: 1.2
+    keywords:
+      OpenAI: 2
+      ChatGPT: 2
+      Anthropic: 2
+      Claude: 1.5
+      Gemini: 2
+      Google DeepMind: 2
+      Meta AI: 2
+      Llama: 1.5
+      Copilot: 1.5
+      xAI: 1.5
+      Grok: 1
+      Mistral: 1.5
+      large language model: 1.5
+      LLM: 1.5
+      LLMs: 1.5
+      generative AI: 1.5
+      AI model: 1.5
+      AI models: 1.5
+      AI agent: 1.5
+      AI agents: 1.5
+      artificial intelligence: 1
+      AI: 0.5
+
+  - id: seo
+    title: SEO & Search Updates
+    weight: 1.2
+    keywords:
+      SEO: 2
+      core update: 3
+      algorithm update: 3
+      spam update: 3
+      site reputation abuse: 3
+      helpful content: 2.5
+      ranking: 1.5
+      rankings: 1.5
+      Google Search: 2
+      Search Console: 3
+      Googlebot: 2.5
+      crawling: 1.5
+      indexing: 2
+      structured data: 2.5
+      schema markup: 2.5
+      Core Web Vitals: 2.5
+      E-E-A-T: 2.5
+      backlinks: 2
+      link building: 2
+      local SEO: 2.5
+      Google Business Profile: 2.5
+      SERP: 2
+      SERPs: 2
+      search results: 1.5
+      technical SEO: 3
+      Bing: 1.5
+      Google Discover: 2
+      keyword research: 2
+      organic traffic: 2
+      digital PR: 2
+
+  - id: paid_media
+    title: Paid Media & Performance
+    weight: 1.0
+    keywords:
+      Google Ads: 3
+      Performance Max: 3
+      PMax: 3
+      AI Max: 3
+      Demand Gen campaigns: 3
+      Microsoft Advertising: 3
+      Microsoft Ads: 3
+      Meta Ads: 3
+      Facebook Ads: 3
+      Advantage+: 2.5
+      LinkedIn Ads: 3
+      Amazon Ads: 3
+      TikTok Ads: 2.5
+      YouTube ads: 2.5
+      PPC: 2.5
+      paid search: 2.5
+      paid social: 2.5
+      ROAS: 2
+      CPC: 1.5
+      Smart Bidding: 2.5
+      bidding: 1.5
+      Shopping ads: 2.5
+      Merchant Center: 2.5
+      ad spend: 1.5
+      conversion tracking: 2
+      attribution: 1.5
+      advertisers: 1
+      ad formats: 1.5
+
+  - id: content_social
+    title: Content, Social & Community
+    weight: 0.9
+    keywords:
+      content marketing: 3
+      content strategy: 3
+      AI content: 2
+      copywriting: 2
+      social media: 2
+      Instagram: 2
+      TikTok: 2
+      Threads: 1.5
+      LinkedIn: 1.5
+      YouTube: 1.5
+      Pinterest: 1.5
+      Snapchat: 1.5
+      Facebook: 1
+      influencer: 2.5
+      influencers: 2.5
+      creator economy: 2.5
+      creators: 1.5
+      video marketing: 2
+      community management: 2.5
+
+  - id: martech_analytics
+    title: MarTech, Analytics & Automation
+    weight: 1.0
+    keywords:
+      GA4: 3
+      Google Analytics: 3
+      Adobe Analytics: 3
+      analytics: 1.5
+      measurement: 1.5
+      marketing mix modeling: 3
+      MMM: 2.5
+      incrementality: 2.5
+      CDP: 2.5
+      customer data platform: 3
+      first-party data: 2.5
+      consent mode: 3
+      privacy: 1.5
+      CRM: 2.5
+      Salesforce: 2.5
+      HubSpot: 2.5
+      Zoho: 2.5
+      marketing automation: 3
+      martech: 3
+      marketing operations: 2.5
+      Looker Studio: 2.5
+      data clean room: 2.5
+      BigQuery: 2
+      workflow automation: 2
+      Supermetrics: 2.5
+
+  - id: media_demand
+    title: Media Buying & Demand Generation
+    weight: 0.9
+    keywords:
+      programmatic: 3
+      DV360: 3
+      Display & Video 360: 3
+      CTV: 3
+      connected TV: 3
+      OTT: 3
+      OOH: 3
+      DOOH: 3
+      retail media: 3
+      ad tech: 2.5
+      adtech: 2.5
+      DSP: 2
+      SSP: 2
+      The Trade Desk: 3
+      header bidding: 2.5
+      Privacy Sandbox: 2.5
+      third-party cookies: 2.5
+      Taboola: 2.5
+      Outbrain: 2.5
+      native advertising: 2.5
+      media buying: 3
+      ABM: 3
+      account-based marketing: 3
+      B2B marketing: 3
+      demand generation: 3
+      lead generation: 2.5
+      intent data: 3
+      B2B: 1.5
+
+  - id: community
+    title: From the Community
+    weight: 1.0
+    keywords: {}
+
+# Items whose title contains any of these are dropped.
+exclude_title_keywords:
+  - sponsored
+  - webinar
+  - hiring
+  - for hire
+  - giveaway
+  - coupon
+  - promo code
+  - video recap   # weekly roundups repeat stories we already carry
+
+# Evergreen how-to and listicle posts are useful but are not news; their score is reduced.
+evergreen_title_patterns:
+  - '^\s*what (is|are)\b'
+  - '^\s*how to\b'
+  - '^\s*\d+\s+(best|top|ways|tips|examples|tools)\b'
+  - '\b\d+\s+best\b'   # "New research compares 12 best GEO agencies"
+  - '\b(beginner''s guide|ultimate guide|complete guide)\b'
+evergreen_multiplier: 0.6
