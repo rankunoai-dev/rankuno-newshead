@@ -88,7 +88,12 @@ def _resolve_origin(entry, link: str, markup: str, source: Source) -> tuple[str,
         return (external, link, None) if external else (link, None, None)
     if source.type == "techmeme":
         article = text.first_external_link(markup, own_domain="techmeme.com")
-        return (article, link, text.techmeme_publisher(markup)) if article else (link, None, "Techmeme")
+        if not article:
+            return link, None, "Techmeme"
+        publisher = text.techmeme_publisher(markup)
+        if publisher and publisher.startswith("@") and text.host_matches(text.host_of(article), ("x.com", "twitter.com")):
+            publisher = f"{publisher} on X"  # Techmeme also cites posts on X
+        return article, link, publisher
     if source.type == "google_alerts":
         return text.unwrap_google_redirect(link), None, None
     if source.type == "google_news":

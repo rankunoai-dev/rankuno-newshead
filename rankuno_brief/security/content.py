@@ -193,6 +193,40 @@ class ContentGate:
                 )
         return Screening(allowed=allowed, verdicts=verdicts)
 
+    def screen_content(self, content, sources: Mapping, approved_ids: Iterable[int] = ()) -> list[Verdict]:
+        """Second screen, on the final stories of an issue (compose.IssueContent), after links were resolved
+        and missing images and summaries were fetched from the web. Removes stories that fail, drops unsafe
+        images and 'Also reported by' mentions, and returns a verdict for every flagged story."""
+        approved = set(approved_ids)
+        verdicts: list[Verdict] = []
+
+        def keep(story) -> bool:
+            source = sources.get(story.source_id)
+            story.title = self.clean_title(story.title)
+            story.excerpt = self.clean_excerpt(story.excerpt or "")
+            story.image_url = self.safe_image(story.image_url, community=bool(source is not None and source.community))
+            story.also_reported_by = [
+                (name, url)
+                for name, url in story.also_reported_by
+                if not self.check_text(name, "publisher") and not self.check_link(url, "link")
+            ]
+            verdict = Verdict(item_id=story.item_id, title=story.title, source_id=story.source_id, approved=story.item_id in approved)
+            verdict.flags.extend(self.check_text(story.title, "headline"))
+            verdict.flags.extend(self.check_text(story.excerpt, "summary"))
+            verdict.flags.extend(self.check_text(story.source_name, "publisher"))
+            verdict.flags.extend(self.check_text(story.via_name or "", "found via"))
+            verdict.flags.extend(self.check_link(story.url, "link"))
+            verdict.flags.extend(self.check_link(story.via_url, "discussion link"))
+            if verdict.flags:
+                verdicts.append(verdict)
+            return bool(story.title) and verdict.decision in ("allowed", "approved")
+
+        content.top_stories = [story for story in content.top_stories if keep(story)]
+        for section in content.sections:
+            section.stories = [story for story in section.stories if keep(story)]
+        content.sections = [section for section in content.sections if section.stories]
+        return verdicts
+
     def clean_title(self, title: str) -> str:
         value = _tidy(title)
         letters = [char for char in value if char.isalpha()]

@@ -96,6 +96,18 @@ def test_google_news_story_from_unknown_publisher_needs_wider_coverage(cfg):
     assert compose.build_content(widely_covered, cfg, NOW).story_count == 1
 
 
+def test_trusted_version_leads_a_merged_story(cfg):
+    rows = [
+        make_item(1, "Anthropic pitches new Claude tool for financial advisers", "google-news-ai-platforms",
+                  url="https://news.google.com/rss/articles/a", publisher="AdvisorHub"),
+        make_item(2, "Anthropic pitches new Claude tool for financial advisers", "google-news-ai-search",
+                  url="https://news.google.com/rss/articles/b", publisher="Reuters"),
+    ]
+    story = compose.build_content(rows, cfg, NOW).stories[0]
+    assert story.source_name == "Reuters"
+    assert story.also_reported_by == [("AdvisorHub", "https://news.google.com/rss/articles/a")]
+
+
 def test_merge_does_not_credit_a_publisher_to_itself(cfg):
     rows = [
         make_item(1, "Google Search Console Indexing report missing June data", "search-engine-land"),

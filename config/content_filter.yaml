@@ -51,8 +51,7 @@ categories:
     action: block
     terms: [
       blowjob*, "blow job", handjob*, "hand job", cumshot*, gangbang*, hentai, milf*, dildo*, orgasm*,
-      masturbat*, "sex tape", "sex video", "leaked nudes", nudes, incest*, bestiality, "child porn*",
-      csam, pedophil*, paedophil*, "child sexual abuse", rape, raped, rapes, raping, rapist*,
+      masturbat*, "sex tape", "sex video", "leaked nudes", nudes, bestiality,
     ]
 
   - id: graphic_violence
@@ -63,6 +62,15 @@ categories:
     ]
 
   # ---- Held for an editor ------------------------------------------------------------------------
+  # Disturbing news topics rather than offensive language: platform-safety reporting (e.g. "X
+  # continues to host CSAM content") can matter to social media teams, so an editor decides.
+
+  - id: sexual_violence
+    action: hold
+    terms: [
+      "child porn*", csam, pedophil*, paedophil*, "child sexual abuse", "child exploitation", rape, raped,
+      rapes, raping, rapist*, incest*, nudify*, nudifying, "revenge porn",
+    ]
 
   - id: adult_themes
     action: hold

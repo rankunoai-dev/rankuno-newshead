@@ -1,13 +1,15 @@
-"""Command line: python -m rankuno_brief {fetch,build,send,sources}."""
+"""Command line: python -m rankuno_brief {fetch,build,send,sources,security}."""
 
 from __future__ import annotations
 
 import argparse
 import logging
 import os
+import re
 import smtplib
 import sqlite3
 import sys
+import time
 from datetime import date, datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -16,8 +18,22 @@ from . import compose, db, enrich, google_news, render, slots
 from .config import Config, ConfigError, load_config
 from .fetch import run_fetch
 from .mailer import SmtpSettings, SmtpTransport, build_message, deliver_issue
+from .scoring import Scorer
+from .security import preflight
+from .security.content import Verdict, gate_for
+from .security.dns import DnsResolver
+from .security.findings import ERROR, WARNING, has_errors
+from .security.recipients import normalize_address
 
 log = logging.getLogger("rankuno_brief")
+
+CHECK_LABELS = {
+    "integrity": "Files unchanged",
+    "content": "Content",
+    "recipients": "Recipients",
+    "spam-signals": "Spam signals",
+    "sender-auth": "Sender (SPF/DKIM/DMARC)",
+}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -45,6 +61,22 @@ def main(argv: list[str] | None = None) -> int:
 
     commands.add_parser("sources", help="show the health of every source")
 
+    security = commands.add_parser("security", help="content screening, recipient and deliverability checks")
+    security_commands = security.add_subparsers(dest="security_command", required=True)
+    check = security_commands.add_parser("check", help="run every pre-send check without sending anything")
+    check.add_argument("--date", type=date.fromisoformat, help="issue date; default: latest unsent issue")
+    review = security_commands.add_parser("review", help="list stories the content screen held or blocked")
+    review.add_argument("--days", type=int, default=14, help="how far back to look (default 14)")
+    review.add_argument("--all", action="store_true", help="also list stories that would not qualify anyway")
+    approve = security_commands.add_parser("approve", help="let held stories into the next build")
+    approve.add_argument("item_ids", nargs="+", type=int, metavar="ID")
+    revoke = security_commands.add_parser("revoke", help="withdraw an approval")
+    revoke.add_argument("item_ids", nargs="+", type=int, metavar="ID")
+    unsuppress = security_commands.add_parser("unsuppress", help="let a suppressed address receive the brief again")
+    unsuppress.add_argument("addresses", nargs="+", metavar="EMAIL")
+    scan = security_commands.add_parser("scan", help="test a headline, phrase or link against the content filter")
+    scan.add_argument("text")
+
     args = parser.parse_args(argv)
     try:
         cfg = load_config()
@@ -55,7 +87,13 @@ def main(argv: list[str] | None = None) -> int:
 
     conn = db.connect(cfg.db_path)
     try:
-        handler = {"fetch": cmd_fetch, "build": cmd_build, "send": cmd_send, "sources": cmd_sources}[args.command]
+        handler = {
+            "fetch": cmd_fetch,
+            "build": cmd_build,
+            "send": cmd_send,
+            "sources": cmd_sources,
+            "security": cmd_security,
+        }[args.command]
         return handler(cfg, conn, args)
     except ConfigError as exc:
         log.error("%s", exc)
@@ -99,7 +137,14 @@ def cmd_build(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) -
     else:
         window_start = now - timedelta(days=cfg.issue.first_issue_lookback_days)
     rows = db.candidate_items(conn, window_start - timedelta(hours=cfg.issue.grace_hours))
-    content = compose.build_content(rows, cfg, now)
+
+    # Security screen: offensive, sensitive or unsafe items never reach selection.
+    gate = gate_for(cfg)
+    screening = gate.screen_items(rows, cfg.source_map, db.approved_item_ids(conn))
+    db.record_moderation(conn, [row["id"] for row in rows], screening.verdicts, now)
+    _log_screen("Security screen", screening.verdicts)
+
+    content = compose.build_content(screening.allowed, cfg, now)
     if not content.story_count:
         log.error("No stories qualified for issue %s. Run 'fetch' first or check the source health.", issue_date)
         return 1
@@ -112,6 +157,14 @@ def cmd_build(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) -
             log.info("Removed %d stories that duplicated another story's article", removed)
         db.update_items(conn, enrich.fill_missing_details(content.stories, cfg.fetch.user_agent))
 
+    # Links, images and summaries can change above, so the final stories are screened again.
+    final_verdicts = gate.screen_content(content, cfg.source_map, db.approved_item_ids(conn))
+    db.record_moderation(conn, (), final_verdicts, now)
+    _log_screen("Final security screen", final_verdicts)
+    if not content.story_count:
+        log.error("No stories left for issue %s after the security screen.", issue_date)
+        return 1
+
     meta = render.IssueMeta(
         number=db.sent_issue_count(conn) + 1,
         issue_date=issue_date,
@@ -120,6 +173,14 @@ def cmd_build(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) -
         subject=render.make_subject(cfg, issue_date),
     )
     html_body, text_body = render.render_issue(content, meta, cfg)
+
+    # Output gate: the finished email is checked before anything is written.
+    findings = gate.scan_email(meta.subject, html_body, text_body)
+    if has_errors(findings):
+        for finding in findings:
+            log.error("Security: %s", finding.message)
+        log.error("Build of issue %s stopped by the security layer; no files were written.", issue_date)
+        return 1
     preview_body, _ = render.render_issue(content, meta, cfg, preview=True)
 
     out_dir = cfg.data_dir / "issues" / issue_date.isoformat()
@@ -129,14 +190,17 @@ def cmd_build(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) -
     text_path.write_text(text_body, encoding="utf-8")
     preview_path.write_text(preview_body, encoding="utf-8")
     # A ready-made message file: double-click it to see exactly how Outlook renders the issue.
+    sender = os.environ.get("MAIL_FROM") or "brief@rankuno.com"
     eml = build_message(
         subject=meta.subject,
         html_body=html_body,
         text_body=text_body,
-        sender=os.environ.get("MAIL_FROM") or "brief@rankuno.com",
+        sender=sender,
         sender_name=cfg.newsletter.name,
-        recipient=(cfg.delivery.recipients or ("preview@rankuno.com",))[0],
+        recipient=_preview_recipient(cfg),
         inline_images=render.inline_images(cfg),
+        reply_to=cfg.security.sending.reply_to or None,
+        unsubscribe_mailbox=_unsubscribe_mailbox(cfg, sender),
     )
     (out_dir / "email.eml").write_bytes(eml.as_bytes())
 
@@ -151,6 +215,8 @@ def cmd_build(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) -
         text_path=str(text_path.relative_to(cfg.root)),
         built_at=now,
         stories=[(story.item_id, story.section_id) for story in content.stories],
+        html_sha256=preflight.sha256(html_body),
+        text_sha256=preflight.sha256(text_body),
     )
 
     size = len(html_body.encode("utf-8"))
@@ -176,11 +242,18 @@ def cmd_send(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) ->
     if issue is None:
         log.error("No built issue found to send. Run 'build' first.")
         return 1
+    testing = args.test is not None
+    if not testing and issue["status"] == "sent":
+        log.error("Issue %s was already sent to everyone", issue["issue_date"])
+        return 1
 
-    html_body = (cfg.root / issue["html_path"]).read_text(encoding="utf-8")
-    text_body = (cfg.root / issue["text_path"]).read_text(encoding="utf-8")
+    bodies = _read_issue_files(cfg, issue)
+    if bodies is None:
+        return 1
+    html_body, text_body = bodies
     smtp = SmtpSettings.from_env()
     images = render.inline_images(cfg)
+    sending = cfg.security.sending
 
     def make_message(recipient: str, subject: str = issue["subject"]):
         return build_message(
@@ -191,39 +264,74 @@ def cmd_send(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) ->
             sender_name=smtp.sender_name,
             recipient=recipient,
             inline_images=images,
+            reply_to=sending.reply_to or None,
+            unsubscribe_mailbox=_unsubscribe_mailbox(cfg, smtp.sender),
         )
 
-    if args.test is not None:
-        recipients = args.test or list(cfg.delivery.recipients)
+    requested = (args.test or list(cfg.delivery.recipients)) if testing else list(cfg.delivery.recipients)
+    with DnsResolver() as resolver:
+        report = preflight.run_preflight(
+            cfg,
+            conn,
+            issue,
+            html_body=html_body,
+            text_body=text_body,
+            requested_recipients=requested,
+            make_message=make_message,
+            sender=smtp.sender,
+            smtp_host=smtp.host,
+            resolver=resolver,
+        )
+    for finding in report.findings:
+        (log.error if finding.is_error else log.warning)("Security [%s]: %s", finding.check, finding.message)
+    if report.blocked:
+        errors = sum(finding.is_error for finding in report.findings)
+        log.error("Nothing was sent: the security layer found %d problem(s). Full report: security check", errors)
+        return 1
+    recipients = report.recipients.accepted
+    skipped = len(report.recipients.rejected)
+
+    if testing:
         with SmtpTransport(smtp) as transport:
-            for recipient in recipients:
+            for index, recipient in enumerate(recipients):
+                if index and sending.delay_seconds:
+                    time.sleep(sending.delay_seconds)
                 transport.send(make_message(recipient, subject=f"[TEST] {issue['subject']}"))
                 log.info("Sent test copy of issue %s to %s", issue["issue_date"], recipient)
-        return 0
-
-    if issue["status"] == "sent":
-        log.error("Issue %s was already sent to everyone", issue["issue_date"])
-        return 1
-    if not cfg.delivery.recipients:
-        log.error("No recipients configured in settings.yaml (delivery.recipients)")
-        return 1
+        return 1 if skipped else 0
 
     with SmtpTransport(smtp) as transport:
-        report = deliver_issue(conn, issue, cfg.delivery.recipients, transport, make_message)
+        delivery = deliver_issue(
+            conn,
+            issue,
+            recipients,
+            transport,
+            make_message,
+            pause_seconds=sending.delay_seconds,
+            suppress_after=cfg.security.recipients.suppress_after_hard_failures,
+        )
     log.info(
-        "Issue %s: %d sent, %d already had it, %d failed, %d uncertain",
+        "Issue %s: %d sent, %d already had it, %d failed, %d uncertain, %d not attempted, %d skipped by security checks",
         issue["issue_date"],
-        len(report.sent),
-        len(report.already_sent),
-        len(report.failed),
-        len(report.uncertain),
+        len(delivery.sent),
+        len(delivery.already_sent),
+        len(delivery.failed),
+        len(delivery.uncertain),
+        len(delivery.not_attempted),
+        skipped,
     )
-    if report.uncertain:
+    if delivery.uncertain:
         log.warning(
             "Uncertain deliveries (an earlier send stopped mid-way; check before resending): %s",
-            ", ".join(report.uncertain),
+            ", ".join(delivery.uncertain),
         )
-    return 0 if report.complete else 1
+    if delivery.not_attempted:
+        log.warning(
+            "The send stopped (%s). Not attempted: %s. Run 'send' again later; nobody receives it twice.",
+            delivery.stopped_because,
+            ", ".join(delivery.not_attempted),
+        )
+    return 0 if delivery.complete and not skipped else 1
 
 
 def cmd_sources(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) -> int:
@@ -237,6 +345,252 @@ def cmd_sources(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace)
             f"{(row['last_success_at'] or '-')[:19]:20}  {row['last_error'] or ''}"
         )
     return 0
+
+
+# Security commands ------------------------------------------------------------------------------
+
+
+def cmd_security(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")  # headlines can contain characters the console cannot show
+    handler = {
+        "check": _security_check,
+        "review": _security_review,
+        "approve": _security_approve,
+        "revoke": _security_revoke,
+        "unsuppress": _security_unsuppress,
+        "scan": _security_scan,
+    }[args.security_command]
+    return handler(cfg, conn, args)
+
+
+def _security_check(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) -> int:
+    issue = db.get_issue(conn, args.date.isoformat()) if args.date else db.latest_unsent_issue(conn)
+    if args.date and issue is None:
+        print(f"No issue has been built for {args.date}.")
+        return 1
+    html_body = text_body = ""
+    if issue is not None:
+        bodies = _read_issue_files(cfg, issue)
+        if bodies is None:
+            return 1
+        html_body, text_body = bodies
+
+    sender, smtp_host = os.environ.get("MAIL_FROM"), os.environ.get("SMTP_HOST")
+
+    def make_message(recipient: str):
+        return build_message(
+            subject=issue["subject"] if issue is not None else render.make_subject(cfg, date.today()),
+            html_body=html_body,
+            text_body=text_body,
+            sender=sender or "brief@rankuno.com",
+            sender_name=os.environ.get("MAIL_FROM_NAME", ""),
+            recipient=recipient,
+            inline_images=render.inline_images(cfg),
+            reply_to=cfg.security.sending.reply_to or None,
+            unsubscribe_mailbox=_unsubscribe_mailbox(cfg, sender or "brief@rankuno.com"),
+        )
+
+    with DnsResolver() as resolver:
+        report = preflight.run_preflight(
+            cfg,
+            conn,
+            issue,
+            html_body=html_body,
+            text_body=text_body,
+            requested_recipients=cfg.delivery.recipients,
+            make_message=make_message,
+            sender=sender,
+            smtp_host=smtp_host,
+            resolver=resolver,
+        )
+
+    print()
+    if issue is not None:
+        built = issue["built_at"][:16].replace("T", " ")
+        print(f"SECURITY CHECK  issue {issue['issue_date']} (No. {issue['number']}, built {built} UTC)")
+    else:
+        print("SECURITY CHECK  no unsent issue is built yet, so only the recipients and the sender are checked")
+    print()
+    for check in report.checks:
+        found = report.for_check(check)
+        errors = sum(finding.is_error for finding in found)
+        warnings = len(found) - errors
+        parts = [f"{errors} error(s)" if errors else "", f"{warnings} warning(s)" if warnings else ""]
+        print(f"  {CHECK_LABELS[check]:<26} {', '.join(part for part in parts if part) or 'ok'}")
+
+    for level, heading in ((ERROR, "ERRORS (these stop the send)"), (WARNING, "WARNINGS")):
+        found = [finding for finding in report.findings if finding.level == level]
+        if found:
+            print(f"\n{heading}")
+            for finding in found:
+                print(f"  - [{finding.check}] {finding.message}")
+
+    accepted = report.recipients.accepted
+    source = cfg.delivery.recipients_file.relative_to(cfg.root) if cfg.delivery.recipients_file else "settings.yaml"
+    print(f"\nRECIPIENTS  {len(accepted)} will receive it, {len(report.recipients.rejected)} skipped  ({source})")
+    for address in accepted[:50]:
+        print(f"  {address}")
+    if len(accepted) > 50:
+        print(f"  ... and {len(accepted) - 50} more")
+
+    sender_report = report.sender
+    if sender_report is not None:
+        print(f"\nSENDER  {sender_report.address} via {sender_report.smtp_host} ({sender_report.provider or 'unrecognised provider'})")
+        print(f"  SPF:   {sender_report.spf[0] if sender_report.spf else 'none found'}")
+        print(f"  DMARC: {sender_report.dmarc[0] if sender_report.dmarc else 'none found'}")
+        if sender_report.provider_signed:
+            print(f"  DKIM:  signed by {sender_report.provider}")
+        else:
+            print(f"  DKIM:  {', '.join(sender_report.dkim_selectors) or 'none found'}")
+    else:
+        print("\nSENDER  not checked: set MAIL_FROM and SMTP_HOST in .env")
+
+    now, scorer = datetime.now(timezone.utc), Scorer(cfg.taxonomy)
+    held = [
+        row
+        for row in db.moderation_entries(conn, now - timedelta(days=14))
+        if _review_state(row) == "held" and _would_qualify(cfg, scorer, row, now)
+    ]
+    if held:
+        print(f"\nCONTENT SCREEN  {len(held)} stor{'y' if len(held) == 1 else 'ies'} from the last 14 days held for review: security review")
+
+    print("\nRESULT  " + ("BLOCKED: fix the errors above; nothing would be sent." if report.blocked else "Ready to send."))
+    return 1 if report.blocked else 0
+
+
+def _security_review(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) -> int:
+    now = datetime.now(timezone.utc)
+    rows = db.moderation_entries(conn, now - timedelta(days=args.days))
+    if not args.all:
+        scorer = Scorer(cfg.taxonomy)
+        rows = [row for row in rows if _would_qualify(cfg, scorer, row, now)]
+    groups = (
+        ("held", "HELD: left out until approved  (approve with: security approve ID)"),
+        ("approved", "APPROVED: can appear in the next build  (undo with: security revoke ID)"),
+        ("blocked", "BLOCKED: never published  (for a false positive, add the phrase to allow_phrases in config/content_filter.yaml)"),
+    )
+    for state, heading in groups:
+        entries = [row for row in rows if _review_state(row) == state]
+        if not entries:
+            continue
+        print(f"\n{heading}")
+        for row in entries:
+            print(f"  {row['item_id']:>6}  {row['published_at'][:10]}  {row['source_id'][:26]:<26}  {row['title'][:90]}")
+            print(f"  {'':>6}  {row['reasons'][:160]}")
+    if not rows:
+        suffix = "" if args.all else " among stories that would otherwise qualify (--all shows every flagged item)"
+        print(f"Nothing held or blocked in the last {args.days} days{suffix}.")
+    return 0
+
+
+def _security_approve(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) -> int:
+    reviewer = os.environ.get("USERNAME") or os.environ.get("USER") or "unknown"
+    status = 0
+    for item_id in args.item_ids:
+        outcome = db.approve_item(conn, item_id, reviewer, datetime.now(timezone.utc))
+        if outcome == "approved":
+            print(f"{item_id}: approved. It can appear from the next 'build'.")
+        elif outcome == "blocked":
+            print(
+                f"{item_id}: blocked stories cannot be approved. If it is a false positive, add the phrase to "
+                "allow_phrases in config/content_filter.yaml and build again."
+            )
+            status = 1
+        else:
+            print(f"{item_id}: not found among screened stories (see: security review)")
+            status = 1
+    return status
+
+
+def _security_revoke(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) -> int:
+    status = 0
+    for item_id in args.item_ids:
+        if db.revoke_approval(conn, item_id):
+            print(f"{item_id}: approval withdrawn. It is left out from the next 'build'.")
+        else:
+            print(f"{item_id}: no approval to withdraw")
+            status = 1
+    return status
+
+
+def _security_unsuppress(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) -> int:
+    status = 0
+    for address in args.addresses:
+        if db.unsuppress(conn, address):
+            print(f"{address}: will receive the brief again")
+        else:
+            print(f"{address}: was not suppressed")
+            status = 1
+    return status
+
+
+def _security_scan(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) -> int:
+    gate = gate_for(cfg)
+    value = args.text.strip()
+    is_link = bool(re.match(r"https?://", value, re.IGNORECASE))
+    flags = gate.check_link(value) if is_link else gate.check_text(value, "text")
+    if not is_link and gate.clean_title(value) != value:
+        print(f"Shown in the email as: {gate.clean_title(value)}")
+    if not flags:
+        print("ALLOWED: nothing found")
+        return 0
+    print("BLOCKED" if any(flag.action == "block" for flag in flags) else "HELD for review")
+    for flag in flags:
+        print(f'  - {flag.category} ({flag.action}): "{flag.term}"')
+    return 1
+
+
+# Helpers ----------------------------------------------------------------------------------------
+
+
+def _log_screen(label: str, verdicts: list[Verdict]) -> None:
+    counts = {decision: sum(verdict.decision == decision for verdict in verdicts) for decision in ("blocked", "held", "approved")}
+    if any(counts.values()):
+        log.info(
+            "%s: %d blocked, %d held for review, %d approved by an editor (details: security review)",
+            label,
+            counts["blocked"],
+            counts["held"],
+            counts["approved"],
+        )
+
+
+def _review_state(row: sqlite3.Row) -> str:
+    return "approved" if row["decision"] == "held" and row["approved_at"] else row["decision"]
+
+
+def _would_qualify(cfg: Config, scorer: Scorer, row: sqlite3.Row, now: datetime) -> bool:
+    """Whether a flagged story is relevant enough that it would have been considered for the brief."""
+    source = cfg.source_map.get(row["source_id"])
+    if source is None or not source.enabled:
+        return False
+    age_days = (now - db.from_iso(row["published_at"])).total_seconds() / 86400
+    result = scorer.score(row["title"], row["excerpt"], source, age_days)
+    return result is not None and result.score >= cfg.issue.min_score
+
+
+def _read_issue_files(cfg: Config, issue: sqlite3.Row) -> tuple[str, str] | None:
+    try:
+        return (
+            (cfg.root / issue["html_path"]).read_text(encoding="utf-8"),
+            (cfg.root / issue["text_path"]).read_text(encoding="utf-8"),
+        )
+    except FileNotFoundError as exc:
+        log.error("The email files for issue %s are missing (%s). Run 'build' again.", issue["issue_date"], exc.filename)
+        return None
+
+
+def _preview_recipient(cfg: Config) -> str:
+    valid = (address for entry in cfg.delivery.recipients if (address := normalize_address(entry)))
+    return next(valid, "preview@rankuno.com")
+
+
+def _unsubscribe_mailbox(cfg: Config, sender: str) -> str | None:
+    sending = cfg.security.sending
+    if not sending.list_unsubscribe:
+        return None
+    return sending.unsubscribe_mailbox or sending.reply_to or sender
 
 
 def _setup_logging(cfg: Config) -> None:

@@ -1,0 +1,12 @@
+# Recipients of The RankUno Brief.
+#
+# One address per line. A list pasted straight from Outlook also works, for example:
+#   Jane Doe <jane.doe@rankuno.com>; John Roe <john.roe@rankuno.com>
+# Anything after # is ignored.
+#
+# Only addresses allowed by config/security.yaml (recipients.allowed_domains and allowed_addresses)
+# are sent to. Invalid, mistyped, unreachable or suppressed addresses are skipped and reported.
+# Check this list at any time, without sending anything:
+#   .\.venv\Scripts\python.exe -m rankuno_brief security check
+
+forselfrajat58615@gmail.com

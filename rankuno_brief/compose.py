@@ -96,7 +96,7 @@ def build_content(rows: Iterable[Mapping], cfg: Config, now: datetime) -> IssueC
         )
 
     scored.sort(key=lambda story: story.score, reverse=True)
-    merged = [story for story in _merge_duplicates(scored) if _has_enough_coverage(story, cfg)]
+    merged = [story for story in _merge_duplicates(scored, cfg) if _has_enough_coverage(story, cfg)]
     for story in merged:
         story.score = round(story.score * (1 + COVERAGE_BONUS * len(story.also_reported_by)), 3)
     merged.sort(key=lambda story: story.score, reverse=True)
@@ -144,24 +144,46 @@ def drop_duplicate_urls(content: IssueContent) -> int:
     return removed
 
 
-def _merge_duplicates(stories: list[Story]) -> list[Story]:
-    """Keep the highest-scoring version of each story and list the other publishers under it."""
-    kept: list[Story] = []
+def _merge_duplicates(stories: list[Story], cfg: Config) -> list[Story]:
+    """Group versions of the same story; lead with the best-scoring trusted version, list the others under it.
+
+    `stories` must be sorted by score, highest first.
+    """
+    clusters: list[list[Story]] = []
     for story in stories:
-        match = next((existing for existing in kept if text.same_story(existing.tokens, story.tokens)), None)
-        if match is None:
-            kept.append(story)
-            continue
-        already_listed = {name for name, _ in match.also_reported_by} | {match.source_name}
-        if story.source_name not in already_listed:
-            match.also_reported_by.append((story.source_name, story.url))
+        cluster = next((group for group in clusters if text.same_story(group[0].tokens, story.tokens)), None)
+        if cluster is None:
+            clusters.append([story])
+        else:
+            cluster.append(story)
+
+    kept: list[Story] = []
+    for cluster in clusters:
+        lead = cluster[0]
+        if not _is_trusted(lead, cfg):
+            lead = next((story for story in cluster if _is_trusted(story, cfg)), lead)
+        lead.score = cluster[0].score
+        listed = {lead.source_name}
+        lead.also_reported_by = []
+        for story in cluster:
+            if story is not lead and story.source_name not in listed:
+                lead.also_reported_by.append((story.source_name, story.url))
+                listed.add(story.source_name)
+        kept.append(lead)
     return kept
+
+
+def _is_trusted(story: Story, cfg: Config) -> bool:
+    """A publisher's own feed we chose to follow, or a publisher on the trusted list."""
+    return not cfg.source_map[story.source_id].aggregator or text.publisher_matches(
+        story.source_name, story.url, cfg.trusted_publishers
+    )
 
 
 def _has_enough_coverage(story: Story, cfg: Config) -> bool:
     """Broad searches (Google News) surface content farms; require a trusted publisher or wider coverage."""
     required = cfg.source_map[story.source_id].min_coverage
-    if required <= 1 or text.publisher_matches(story.source_name, story.url, cfg.trusted_publishers):
+    if required <= 1 or _is_trusted(story, cfg):
         return True
     return 1 + len(story.also_reported_by) >= required
 

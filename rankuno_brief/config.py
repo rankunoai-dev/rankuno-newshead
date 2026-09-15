@@ -11,6 +11,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import yaml
 
 from . import slots
+from .security.policy import SecurityPolicy, parse_policy
+from .security.recipients import read_recipients_file
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -125,7 +127,8 @@ class FetchSettings:
 
 @dataclass(frozen=True)
 class DeliverySettings:
-    recipients: tuple[str, ...]
+    recipients: tuple[str, ...]  # as written in the recipients file; checked by the security layer before sending
+    recipients_file: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -137,6 +140,7 @@ class Config:
     delivery: DeliverySettings
     sources: tuple[Source, ...]
     taxonomy: Taxonomy
+    security: SecurityPolicy
     exclude_publishers: tuple[str, ...] = ()  # names or domains, e.g. press-release wires
     trusted_publishers: tuple[str, ...] = ()  # names or domains exempt from a source's min_coverage
 
@@ -166,18 +170,26 @@ def load_config(root: Path = ROOT) -> Config:
     settings = _read_yaml(root / "config" / "settings.yaml")
     sources_doc = _read_yaml(root / "config" / "sources.yaml")
     taxonomy_doc = _read_yaml(root / "config" / "taxonomy.yaml")
+    security_doc = _read_yaml(root / "config" / "security.yaml")
+    content_filter_doc = _read_yaml(root / "config" / "content_filter.yaml")
 
     try:
         taxonomy = _parse_taxonomy(taxonomy_doc)
         sources = tuple(Source(**entry) for entry in sources_doc["sources"])
+        delivery_doc = settings["delivery"]
+        recipients_file = root / delivery_doc.get("recipients_file", "config/recipients.txt")
         cfg = Config(
             root=root,
             newsletter=_parse_newsletter(settings["newsletter"]),
             issue=IssueSettings(**settings["issue"]),
             fetch=FetchSettings(**settings["fetch"]),
-            delivery=DeliverySettings(recipients=tuple(settings["delivery"]["recipients"] or ())),
+            delivery=DeliverySettings(
+                recipients=tuple(delivery_doc.get("recipients") or ()) + read_recipients_file(recipients_file),
+                recipients_file=recipients_file,
+            ),
             sources=sources,
             taxonomy=taxonomy,
+            security=parse_policy(security_doc, content_filter_doc),
             exclude_publishers=tuple(str(entry) for entry in sources_doc.get("exclude_publishers") or ()),
             trusted_publishers=tuple(str(entry) for entry in sources_doc.get("trusted_publishers") or ()),
         )
@@ -271,6 +283,12 @@ def _validate(cfg: Config) -> None:
         problems.append("settings.yaml newsletter.send_slots must list at least one slot")
     if cfg.issue.top_stories > cfg.issue.max_stories:
         problems.append("settings.yaml issue.top_stories cannot exceed issue.max_stories")
+
+    allowed = cfg.security.recipients
+    if not allowed.allowed_domains and not allowed.allowed_addresses:
+        problems.append("security.yaml allows no recipients: list recipients.allowed_domains or allowed_addresses")
+    if not any(category.action == "block" and category.terms for category in cfg.security.content.categories):
+        problems.append("content_filter.yaml has no blocking category with terms; the content filter would be empty")
 
     if problems:
         raise ConfigError("Invalid configuration:\n  - " + "\n  - ".join(problems))

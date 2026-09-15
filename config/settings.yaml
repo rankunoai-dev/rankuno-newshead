@@ -36,5 +36,6 @@ fetch:
   user_agent: "Mozilla/5.0 (compatible; RankUnoBrief/0.1; +https://rankuno.com/)"
 
 delivery:
-  recipients:
-    - forselfrajat58615@gmail.com
+  # Who receives the brief: one address per line in this file (a list pasted from Outlook also works).
+  # Every address is checked by the security layer (config/security.yaml) before anything is sent.
+  recipients_file: config/recipients.txt

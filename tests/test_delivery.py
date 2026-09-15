@@ -8,13 +8,16 @@ from rankuno_brief.mailer import build_message, deliver_issue
 
 
 class FakeTransport:
-    def __init__(self, fail_for=()):
+    def __init__(self, fail_for=(), reject_message_at=None):
         self.fail_for = set(fail_for)
+        self.reject_message_at = reject_message_at
         self.sent = []
 
     def send(self, message):
         if message["To"] in self.fail_for:
             raise smtplib.SMTPRecipientsRefused({message["To"]: (550, b"mailbox unavailable")})
+        if message["To"] == self.reject_message_at:
+            raise smtplib.SMTPDataError(550, b"5.7.1 Message rejected as spam")
         self.sent.append(message["To"])
 
 
@@ -82,6 +85,49 @@ def test_sent_issue_cannot_be_rebuilt(conn):
         assert "already been sent" in str(exc)
     else:
         raise AssertionError("rebuilding a sent issue should fail")
+
+
+def test_address_rejected_permanently_twice_is_suppressed(conn):
+    issue = make_issue(conn)
+    for _ in range(2):
+        deliver_issue(conn, issue, ["gone@x.com"], FakeTransport(fail_for={"gone@x.com"}), message_for,
+                      now=lambda: NOW, suppress_after=2)
+    assert db.suppressed_addresses(conn) == {"gone@x.com"}
+    assert db.unsuppress(conn, "gone@x.com") and db.suppressed_addresses(conn) == set()
+
+
+def test_successful_delivery_resets_the_failure_count(conn):
+    issue = make_issue(conn)
+    deliver_issue(conn, issue, ["a@x.com"], FakeTransport(fail_for={"a@x.com"}), message_for, now=lambda: NOW, suppress_after=2)
+    deliver_issue(conn, issue, ["a@x.com"], FakeTransport(), message_for, now=lambda: NOW, suppress_after=2)
+    deliver_issue(conn, make_issue_on(conn, "2026-09-17"), ["a@x.com"], FakeTransport(fail_for={"a@x.com"}),
+                  message_for, now=lambda: NOW, suppress_after=2)
+    assert db.suppressed_addresses(conn) == set()
+
+
+def test_server_rejecting_the_message_stops_the_send(conn):
+    issue = make_issue(conn)
+    transport = FakeTransport(reject_message_at="b@x.com")
+    report = deliver_issue(conn, issue, ["a@x.com", "b@x.com", "c@x.com"], transport, message_for, now=lambda: NOW,
+                           suppress_after=2)
+    assert transport.sent == ["a@x.com"]
+    assert report.not_attempted == ["c@x.com"] and "rejected as spam" in report.stopped_because
+    assert db.suppressed_addresses(conn) == set()  # not the recipient's fault
+    assert db.get_issue(conn, "2026-09-14")["status"] == "partial"
+
+
+def test_messages_are_spaced_out(conn):
+    issue = make_issue(conn)
+    pauses = []
+    deliver_issue(conn, issue, ["a@x.com", "b@x.com", "c@x.com"], FakeTransport(), message_for, now=lambda: NOW,
+                  pause_seconds=2.5, sleep=pauses.append)
+    assert pauses == [2.5, 2.5]
+
+
+def make_issue_on(conn, issue_date):
+    issue_id = db.save_issue(conn, issue_date=issue_date, number=2, subject="S", window_start=NOW, window_end=NOW,
+                             html_path="h", text_path="t", built_at=NOW, stories=[])
+    return conn.execute("SELECT * FROM issues WHERE id = ?", (issue_id,)).fetchone()
 
 
 def test_message_has_plain_text_and_html_with_embedded_logos(cfg):

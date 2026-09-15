@@ -69,7 +69,9 @@ CREATE TABLE IF NOT EXISTS issues (
     html_path     TEXT NOT NULL,
     text_path     TEXT NOT NULL,
     built_at      TEXT NOT NULL,
-    sent_at       TEXT
+    sent_at       TEXT,
+    html_sha256   TEXT,                  -- fingerprints of the screened files; a send refuses if they changed
+    text_sha256   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS issue_items (
@@ -89,6 +91,24 @@ CREATE TABLE IF NOT EXISTS deliveries (
     error         TEXT,
     PRIMARY KEY (issue_id, recipient)
 );
+
+-- Security screen results for flagged items (items with nothing found have no row).
+CREATE TABLE IF NOT EXISTS moderation (
+    item_id      INTEGER PRIMARY KEY REFERENCES items (id),
+    decision     TEXT NOT NULL,   -- blocked | held
+    reasons      TEXT NOT NULL,
+    checked_at   TEXT NOT NULL,
+    approved_at  TEXT,            -- an editor approved a held item; ignored for blocked items
+    approved_by  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS recipient_health (
+    address          TEXT PRIMARY KEY,
+    hard_failures    INTEGER NOT NULL DEFAULT 0,  -- consecutive permanent (5xx) rejections
+    last_error       TEXT,
+    last_failure_at  TEXT,
+    suppressed_at    TEXT                          -- set once hard_failures reaches the limit
+);
 """
 
 
@@ -106,7 +126,11 @@ def connect(path: Path | str) -> sqlite3.Connection:
 
 
 # Columns added after the first release: (table, column, definition). Applied once to older databases.
-_ADDED_COLUMNS = (("items", "publisher", "TEXT"),)
+_ADDED_COLUMNS = (
+    ("items", "publisher", "TEXT"),
+    ("issues", "html_sha256", "TEXT"),
+    ("issues", "text_sha256", "TEXT"),
+)
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -286,25 +310,30 @@ def save_issue(
     text_path: str,
     built_at: datetime,
     stories: Iterable[tuple[int, str]],
+    html_sha256: str | None = None,
+    text_sha256: str | None = None,
 ) -> int:
     """Create or rebuild an unsent issue. `stories` is (item_id, section) in reading order."""
     with conn:
         existing = conn.execute("SELECT id, status FROM issues WHERE issue_date = ?", (issue_date,)).fetchone()
         if existing and existing["status"] in SENT_STATUSES:
             raise ValueError(f"Issue {issue_date} has already been sent and cannot be rebuilt")
-        values = (number, subject, to_iso(window_start), to_iso(window_end), html_path, text_path, to_iso(built_at))
+        values = (
+            number, subject, to_iso(window_start), to_iso(window_end), html_path, text_path, to_iso(built_at),
+            html_sha256, text_sha256,
+        )
         if existing:
             issue_id = existing["id"]
             conn.execute(
                 "UPDATE issues SET number = ?, subject = ?, window_start = ?, window_end = ?, html_path = ?, "
-                "text_path = ?, built_at = ?, status = 'built' WHERE id = ?",
+                "text_path = ?, built_at = ?, html_sha256 = ?, text_sha256 = ?, status = 'built' WHERE id = ?",
                 (*values, issue_id),
             )
             conn.execute("DELETE FROM issue_items WHERE issue_id = ?", (issue_id,))
         else:
             issue_id = conn.execute(
                 "INSERT INTO issues (number, subject, window_start, window_end, html_path, text_path, built_at, "
-                "issue_date, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'built')",
+                "html_sha256, text_sha256, issue_date, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'built')",
                 (*values, issue_date),
             ).lastrowid
         conn.executemany(
@@ -344,3 +373,107 @@ def mark_delivery(
             "attempted_at = excluded.attempted_at, sent_at = excluded.sent_at, error = excluded.error",
             (issue_id, recipient, status, moment, moment if status == "sent" else None, error),
         )
+
+
+# Moderation -----------------------------------------------------------------------------------
+
+
+def record_moderation(conn: sqlite3.Connection, screened_ids: Iterable[int], verdicts: Iterable, at: datetime) -> None:
+    """Store the latest screen result. Approvals survive re-screening; rows for items now clean are removed."""
+    moment = to_iso(at)
+    flagged = {verdict.item_id: verdict for verdict in verdicts}
+    with conn:
+        conn.executemany(
+            "INSERT INTO moderation (item_id, decision, reasons, checked_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT (item_id) DO UPDATE SET decision = excluded.decision, reasons = excluded.reasons, "
+            "checked_at = excluded.checked_at",
+            [
+                (item_id, "blocked" if verdict.decision == "blocked" else "held", verdict.reasons, moment)
+                for item_id, verdict in flagged.items()
+            ],
+        )
+        conn.executemany(
+            "DELETE FROM moderation WHERE item_id = ? AND approved_at IS NULL",
+            [(item_id,) for item_id in screened_ids if item_id not in flagged],
+        )
+
+
+def approved_item_ids(conn: sqlite3.Connection) -> set[int]:
+    rows = conn.execute("SELECT item_id FROM moderation WHERE approved_at IS NOT NULL")
+    return {row["item_id"] for row in rows}
+
+
+def moderation_entries(conn: sqlite3.Connection, published_since: datetime) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT m.item_id, m.decision, m.reasons, m.approved_at, m.approved_by, i.title, i.excerpt, i.url, "
+        "i.source_id, i.published_at FROM moderation m JOIN items i ON i.id = m.item_id "
+        "WHERE i.published_at >= ? ORDER BY m.decision, i.published_at DESC",
+        (to_iso(published_since),),
+    ).fetchall()
+
+
+def approve_item(conn: sqlite3.Connection, item_id: int, by: str, at: datetime) -> str:
+    """Approve a held item. Returns 'approved', 'blocked' (not allowed) or 'unknown'."""
+    with conn:
+        row = conn.execute("SELECT decision FROM moderation WHERE item_id = ?", (item_id,)).fetchone()
+        if row is None:
+            return "unknown"
+        if row["decision"] == "blocked":
+            return "blocked"
+        conn.execute(
+            "UPDATE moderation SET approved_at = ?, approved_by = ? WHERE item_id = ?", (to_iso(at), by, item_id)
+        )
+    return "approved"
+
+
+def revoke_approval(conn: sqlite3.Connection, item_id: int) -> bool:
+    with conn:
+        cursor = conn.execute(
+            "UPDATE moderation SET approved_at = NULL, approved_by = NULL WHERE item_id = ? AND approved_at IS NOT NULL",
+            (item_id,),
+        )
+    return cursor.rowcount > 0
+
+
+# Recipient health -----------------------------------------------------------------------------
+
+
+def record_hard_failure(conn: sqlite3.Connection, address: str, error: str, at: datetime, limit: int) -> bool:
+    """Count a permanent rejection. Returns True when this failure suppresses the address."""
+    moment = to_iso(at)
+    with conn:
+        conn.execute(
+            "INSERT INTO recipient_health (address, hard_failures, last_error, last_failure_at) VALUES (?, 1, ?, ?) "
+            "ON CONFLICT (address) DO UPDATE SET hard_failures = hard_failures + 1, "
+            "last_error = excluded.last_error, last_failure_at = excluded.last_failure_at",
+            (address.lower(), error, moment),
+        )
+        cursor = conn.execute(
+            "UPDATE recipient_health SET suppressed_at = ? "
+            "WHERE address = ? AND suppressed_at IS NULL AND hard_failures >= ?",
+            (moment, address.lower(), limit),
+        )
+    return cursor.rowcount > 0
+
+
+def clear_hard_failures(conn: sqlite3.Connection, address: str) -> None:
+    with conn:
+        conn.execute(
+            "UPDATE recipient_health SET hard_failures = 0 WHERE address = ? AND suppressed_at IS NULL",
+            (address.lower(),),
+        )
+
+
+def suppressed_addresses(conn: sqlite3.Connection) -> set[str]:
+    rows = conn.execute("SELECT address FROM recipient_health WHERE suppressed_at IS NOT NULL")
+    return {row["address"] for row in rows}
+
+
+def unsuppress(conn: sqlite3.Connection, address: str) -> bool:
+    with conn:
+        cursor = conn.execute(
+            "UPDATE recipient_health SET suppressed_at = NULL, hard_failures = 0 WHERE address = ? "
+            "AND suppressed_at IS NOT NULL",
+            (address.strip().lower(),),
+        )
+    return cursor.rowcount > 0

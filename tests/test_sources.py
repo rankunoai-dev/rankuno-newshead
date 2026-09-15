@@ -76,6 +76,14 @@ def test_techmeme_entry_points_at_original_article(cfg):
     assert item["publisher"] == "The Verge"
 
 
+def test_techmeme_entry_citing_a_post_on_x(cfg):
+    rss = TECHMEME_RSS.replace("https://www.theverge.com/ai/openai-ads-europe", "https://x.com/dkokotajlo/status/1") \
+                      .replace("Emma Roth / &lt;a href=\"https://www.theverge.com/\"&gt;The Verge&lt;/a&gt;",
+                               "&lt;a href=\"https://x.com/dkokotajlo\"&gt;@dkokotajlo&lt;/a&gt;")
+    item = adapters.entry_to_item(feedparser.parse(rss).entries[0], cfg.source_map["techmeme"], NOW, MAX_AGE)
+    assert (item["url"], item["publisher"]) == ("https://x.com/dkokotajlo/status/1", "@dkokotajlo on X")
+
+
 def test_google_alerts_entry_unwraps_redirect(cfg):
     source = replace(cfg.source_map["quora-ai-search"], enabled=True)
     entry = feedparser.parse(GOOGLE_ALERTS_ATOM).entries[0]
