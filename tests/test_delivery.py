@@ -1,10 +1,9 @@
-import smtplib
 from datetime import timedelta
 
 from conftest import NOW
 
 from rankuno_brief import db, render
-from rankuno_brief.mailer import build_message, deliver_issue
+from rankuno_brief.mailer import MailError, RecipientRejected, build_message, deliver_issue
 
 
 class FakeTransport:
@@ -15,9 +14,9 @@ class FakeTransport:
 
     def send(self, message):
         if message["To"] in self.fail_for:
-            raise smtplib.SMTPRecipientsRefused({message["To"]: (550, b"mailbox unavailable")})
+            raise RecipientRejected("550 mailbox unavailable", permanent=True)
         if message["To"] == self.reject_message_at:
-            raise smtplib.SMTPDataError(550, b"5.7.1 Message rejected as spam")
+            raise MailError("550 5.7.1 Message rejected as spam")
         self.sent.append(message["To"])
 
 

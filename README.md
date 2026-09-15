@@ -30,8 +30,10 @@ copy .env.example .env      # then fill in the SMTP values
 .\.venv\Scripts\python.exe -m rankuno_brief fetch            # daily: download all sources, store new items
 .\.venv\Scripts\python.exe -m rankuno_brief build            # assemble the next issue
 .\.venv\Scripts\python.exe -m rankuno_brief build --offline  # same, without web lookups (links, images)
-.\.venv\Scripts\python.exe -m rankuno_brief send --test      # [TEST] copy to the configured recipients
-.\.venv\Scripts\python.exe -m rankuno_brief send             # real send (recorded; never sends twice)
+.\.venv\Scripts\python.exe -m rankuno_brief send --test      # [TEST] copy to TEST_RECIPIENTS only
+.\.venv\Scripts\python.exe -m rankuno_brief send             # real send (needs PROD_SEND_ENABLED=true; never sends twice)
+.\.venv\Scripts\python.exe -m rankuno_brief run --test       # right now: fetch, build, [TEST] copy to TEST_RECIPIENTS
+.\.venv\Scripts\python.exe -m rankuno_brief serve            # hosting: schedule + admin page (see Deploying to Railway)
 .\.venv\Scripts\python.exe -m rankuno_brief sources          # health of every source
 .\.venv\Scripts\python.exe -m rankuno_brief security check   # every pre-send check, without sending
 .\.venv\Scripts\python.exe -m rankuno_brief security review  # stories held or blocked by the content screen
@@ -56,7 +58,26 @@ copy .env.example .env      # then fill in the SMTP values
 | `config/recipients.txt` | Who receives the brief: one address per line, or a list pasted from Outlook |
 | `config/security.yaml` | Allowed recipient domains and addresses, sending limits and pace, unsubscribe header |
 | `config/content_filter.yaml` | Blocked and held terms, harmless exceptions, blocked sites and link shorteners |
-| `.env` | Email credentials (never committed) |
+| `.env` | Mail settings for the production and test profiles, admin token, data folder (never committed; see `.env.example`) |
+
+### Mail settings: production and test
+
+Everything about sending comes from environment variables (`.env` locally, **Variables** on Railway), so
+switching from Gmail to Microsoft 365 or changing who receives tests needs no code change.
+
+| Variable | Meaning |
+|---|---|
+| `TEST_RECIPIENTS` | Test copies go to these addresses and nobody else, e.g. `rajat.singh@rankuno.com` |
+| `PROD_SEND_ENABLED` | Production issues are sent only when `true` |
+| `PROD_RECIPIENTS` | Optional production list; empty = `config/recipients.txt` |
+| `MAIL_PROVIDER` | `smtp` (e.g. Gmail) or `graph` (Microsoft 365) |
+| `MAIL_FROM`, `MAIL_FROM_NAME`, `MAIL_REPLY_TO` | Sender |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD` | For `smtp` |
+| `GRAPH_TENANT_ID`, `GRAPH_CLIENT_ID`, `GRAPH_CLIENT_SECRET` | For `graph` |
+
+Prefix any mail setting with `PROD_` or `TEST_` to set it for one profile only (for example
+`PROD_MAIL_PROVIDER=graph` with `TEST_MAIL_PROVIDER=smtp`). Without a prefix, a setting is shared by both.
+`security check` (or `security check --test`) shows the settings in use, with secrets hidden.
 
 To add a source, add an entry to `sources.yaml`. No code changes are needed.
 
@@ -117,6 +138,32 @@ A blocked false positive is fixed by adding the harmless phrase to `allow_phrase
 **Adding recipients.** Paste the addresses into `config/recipients.txt`, then run `security check`
 to confirm every address is accepted before the next send.
 
+## Deploying to Railway
+
+One always-on service runs everything: the daily news fetch, the Monday/Thursday issue, and a small admin
+page from which a test email can be sent at any time.
+
+1. **Create the service** from this project (GitHub repo or `railway up`). `railway.json` and `Dockerfile` configure the build, start command and health check.
+2. **Add a volume** mounted at `/data` (service → Settings → Volumes). It holds the database that records what was sent; without it, a redeploy forgets and could send an issue twice.
+3. **Set Variables** (see `.env.example`):
+   - `TEST_RECIPIENTS=rajat.singh@rankuno.com`
+   - `PROD_SEND_ENABLED=false` until the real recipient list is ready
+   - the mail settings
+   - `ADMIN_TOKEN`: generate with `python -c "import secrets; print(secrets.token_urlsafe(32))"`
+4. **Generate a domain** (Settings → Networking) and open it. Sign in with any user name and the `ADMIN_TOKEN` as the password.
+5. Click **Send test email now**. The newest news is fetched, the issue is built and checked, and a `[TEST]` copy goes to `TEST_RECIPIENTS` only. **Build preview (no email)** builds from stored news for viewing in the browser.
+
+**SMTP on Railway:** Railway blocks SMTP on its Free, Trial and Hobby plans; it is available on Pro. With
+`MAIL_PROVIDER=smtp` (Gmail), use the Pro plan. `MAIL_PROVIDER=graph` sends over HTTPS and works on every plan.
+
+**Switching to Microsoft 365:** IT registers an app in Microsoft Entra ID with the **Mail.Send**
+application permission (admin consent) and creates a mailbox such as `brief@rankuno.com`. A shared mailbox
+needs no licence. IT should also restrict the app to that one mailbox with an Exchange application access policy.
+Then set `MAIL_PROVIDER=graph`, `MAIL_FROM=brief@rankuno.com` and the three `GRAPH_` values, and click
+**Send test email now**.
+
+Triggering a test from a script: `curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" https://<domain>/run/test`.
+
 ## Project status
 
 **Phase 1 is done:** a minimal version that works end to end.
@@ -139,6 +186,13 @@ to confirm every address is accepted before the next send.
 **Security layer is done:** content screening with editor approval, output gate with tamper check,
 recipient allowlist and bounce suppression, spam-signal and SPF/DKIM/DMARC checks (above).
 
+**Hosting groundwork is done:**
+- Production and test mail profiles from environment variables.
+- Microsoft Graph sending.
+- `serve` mode with the schedule and an admin page (test email on demand).
+- A production safety switch.
+- Dockerfile and `railway.json`.
+
 **Coming next:**
 
 | Phase | Adds |
@@ -147,7 +201,7 @@ recipient allowlist and bounce suppression, spam-signal and SPF/DKIM/DMARC check
 | 3 | Full article text, tool and resource link extraction, grouping of same-story coverage that uses different wording |
 | 4 | Low-cost batched AI summaries and "why it matters" on selected stories only, with fallback when the AI is down |
 | 5 | Template refinements from stakeholder feedback, tested in Outlook desktop, Outlook web and mobile |
-| 6 | Hosting, scheduler (06:00 fetch; Mon/Thu 09:00 send), Microsoft Graph sending, monitoring, backups |
+| 6 (remaining) | First Railway deployment, Microsoft 365 app credentials from IT, failure alerts, database backups |
 
 **Known limitations:**
 

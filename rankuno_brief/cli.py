@@ -1,4 +1,4 @@
-"""Command line: python -m rankuno_brief {fetch,build,send,sources,security}."""
+"""Command line: python -m rankuno_brief {fetch,build,send,run,serve,sources,security}."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import argparse
 import logging
 import os
 import re
-import smtplib
 import sqlite3
 import sys
 import time
@@ -17,7 +16,8 @@ from pathlib import Path
 from . import compose, db, enrich, google_news, render, slots
 from .config import Config, ConfigError, load_config
 from .fetch import run_fetch
-from .mailer import SmtpSettings, SmtpTransport, build_message, deliver_issue
+from .mail_profiles import PRODUCTION, TEST, MailProfile, load_profile
+from .mailer import MailError, RecipientRejected, build_message, deliver_issue
 from .scoring import Scorer
 from .security import preflight
 from .security.content import Verdict, gate_for
@@ -50,21 +50,26 @@ def main(argv: list[str] | None = None) -> int:
         help="skip web lookups (Google News link resolution, missing images and summaries)",
     )
 
-    send = commands.add_parser("send", help="email a built issue to the configured recipients")
+    send = commands.add_parser("send", help="email a built issue (production profile, or --test)")
     send.add_argument("--date", type=date.fromisoformat, help="issue date to send; default: latest unsent issue")
     send.add_argument(
         "--test",
-        nargs="*",
-        metavar="EMAIL",
-        help="send a [TEST] copy (to these addresses, or the configured recipients) without marking the issue sent",
+        action="store_true",
+        help="send a [TEST] copy with the TEST_ mail settings to TEST_RECIPIENTS only; nothing is marked sent",
     )
 
+    run = commands.add_parser("run", help="fetch, build and send right now, whatever the schedule")
+    run.add_argument("--test", action="store_true", help="send a [TEST] copy to TEST_RECIPIENTS only")
+    run.add_argument("--no-fetch", action="store_true", help="build from the news already stored")
+
+    commands.add_parser("serve", help="hosting mode: run the schedule and the admin page (PORT, ADMIN_TOKEN)")
     commands.add_parser("sources", help="show the health of every source")
 
     security = commands.add_parser("security", help="content screening, recipient and deliverability checks")
     security_commands = security.add_subparsers(dest="security_command", required=True)
     check = security_commands.add_parser("check", help="run every pre-send check without sending anything")
     check.add_argument("--date", type=date.fromisoformat, help="issue date; default: latest unsent issue")
+    check.add_argument("--test", action="store_true", help="check the TEST_ mail settings and TEST_RECIPIENTS")
     review = security_commands.add_parser("review", help="list stories the content screen held or blocked")
     review.add_argument("--days", type=int, default=14, help="how far back to look (default 14)")
     review.add_argument("--all", action="store_true", help="also list stories that would not qualify anyway")
@@ -83,7 +88,12 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         print(exc, file=sys.stderr)
         return 2
-    _setup_logging(cfg)
+    setup_logging(cfg)
+
+    if args.command == "serve":
+        from .server import serve
+
+        return serve(cfg)
 
     conn = db.connect(cfg.db_path)
     try:
@@ -91,6 +101,7 @@ def main(argv: list[str] | None = None) -> int:
             "fetch": cmd_fetch,
             "build": cmd_build,
             "send": cmd_send,
+            "run": cmd_run,
             "sources": cmd_sources,
             "security": cmd_security,
         }[args.command]
@@ -98,17 +109,8 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         log.error("%s", exc)
         return 2
-    except smtplib.SMTPAuthenticationError as exc:
-        server_message = exc.smtp_error.decode(errors="replace") if isinstance(exc.smtp_error, bytes) else exc.smtp_error
-        log.error(
-            "The mail server rejected the login (%s: %s). Check SMTP_USERNAME and SMTP_PASSWORD in .env; "
-            "for Gmail the password must be an App Password created on that same account.",
-            exc.smtp_code,
-            " ".join(server_message.split()),
-        )
-        return 1
-    except (smtplib.SMTPException, OSError) as exc:
-        log.error("Could not connect to the mail server: %s: %s", type(exc).__name__, exc)
+    except MailError as exc:
+        log.error("%s", exc)
         return 1
     finally:
         conn.close()
@@ -121,15 +123,43 @@ def cmd_fetch(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) -
 
 
 def cmd_build(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) -> int:
+    return 0 if build_issue(cfg, conn, issue_date=args.date, offline=args.offline) else 1
+
+
+def cmd_send(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) -> int:
+    profile = load_profile(TEST if args.test else PRODUCTION, cfg)
+    return send_issue(cfg, conn, profile, issue_date=args.date)
+
+
+def cmd_run(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) -> int:
+    return run_pipeline(cfg, conn, test=args.test, fetch=not args.no_fetch)
+
+
+def run_pipeline(cfg: Config, conn: sqlite3.Connection, *, test: bool, fetch: bool = True, send: bool = True) -> int:
+    """Fetch, build and send now. Production issues are only sent when PROD_SEND_ENABLED is true."""
+    profile = load_profile(TEST if test else PRODUCTION, cfg) if send else None  # fail before a long fetch
+    if fetch:
+        cmd_fetch(cfg, conn, argparse.Namespace())  # if every source fails, the stored news is still built
+    issue_date = build_issue(cfg, conn)
+    if issue_date is None or profile is None:
+        return 0 if issue_date else 1
+    if not profile.send_enabled:
+        log.warning("Issue %s is built. Production sending is off (PROD_SEND_ENABLED), so nothing was sent.", issue_date)
+        return 0
+    return send_issue(cfg, conn, profile, issue_date=issue_date)
+
+
+def build_issue(cfg: Config, conn: sqlite3.Connection, *, issue_date: date | None = None, offline: bool = False) -> date | None:
+    """Build (or rebuild) an unsent issue. Returns its date, or None when nothing was built."""
     now = datetime.now(timezone.utc)
     tz = cfg.newsletter.timezone
     sent_dates = {date.fromisoformat(value) for value in db.sent_issue_dates(conn)}
-    issue_date = args.date or slots.resolve_issue_date(now.astimezone(tz), cfg.newsletter.send_slots, sent_dates)
+    issue_date = issue_date or slots.resolve_issue_date(now.astimezone(tz), cfg.newsletter.send_slots, sent_dates)
 
     existing = db.get_issue(conn, issue_date.isoformat())
     if existing and existing["status"] in db.SENT_STATUSES:
         log.error("Issue %s has already been sent; it will not be rebuilt", issue_date)
-        return 1
+        return None
 
     last_sent = db.last_sent_issue(conn)
     if last_sent:
@@ -147,9 +177,9 @@ def cmd_build(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) -
     content = compose.build_content(screening.allowed, cfg, now)
     if not content.story_count:
         log.error("No stories qualified for issue %s. Run 'fetch' first or check the source health.", issue_date)
-        return 1
+        return None
 
-    if not args.offline:
+    if not offline:
         resolved = google_news.resolve_links(content.stories)
         db.update_items(conn, {item_id: {"url": url} for item_id, url in resolved.items()})
         removed = compose.drop_duplicate_urls(content)
@@ -163,7 +193,7 @@ def cmd_build(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) -
     _log_screen("Final security screen", final_verdicts)
     if not content.story_count:
         log.error("No stories left for issue %s after the security screen.", issue_date)
-        return 1
+        return None
 
     meta = render.IssueMeta(
         number=db.sent_issue_count(conn) + 1,
@@ -180,7 +210,7 @@ def cmd_build(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) -
         for finding in findings:
             log.error("Security: %s", finding.message)
         log.error("Build of issue %s stopped by the security layer; no files were written.", issue_date)
-        return 1
+        return None
     preview_body, _ = render.render_issue(content, meta, cfg, preview=True)
 
     out_dir = cfg.data_dir / "issues" / issue_date.isoformat()
@@ -190,18 +220,11 @@ def cmd_build(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) -
     text_path.write_text(text_body, encoding="utf-8")
     preview_path.write_text(preview_body, encoding="utf-8")
     # A ready-made message file: double-click it to see exactly how Outlook renders the issue.
-    sender = os.environ.get("MAIL_FROM") or "brief@rankuno.com"
-    eml = build_message(
-        subject=meta.subject,
-        html_body=html_body,
-        text_body=text_body,
-        sender=sender,
-        sender_name=cfg.newsletter.name,
-        recipient=_preview_recipient(cfg),
-        inline_images=render.inline_images(cfg),
-        reply_to=cfg.security.sending.reply_to or None,
-        unsubscribe_mailbox=_unsubscribe_mailbox(cfg, sender),
-    )
+    try:
+        profile = load_profile(PRODUCTION, cfg)
+    except ConfigError:
+        profile = None
+    eml = _message(cfg, profile, meta.subject, html_body, text_body, _preview_recipient(cfg))
     (out_dir / "email.eml").write_bytes(eml.as_bytes())
 
     db.save_issue(
@@ -211,8 +234,8 @@ def cmd_build(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) -
         subject=meta.subject,
         window_start=window_start,
         window_end=now,
-        html_path=str(html_path.relative_to(cfg.root)),
-        text_path=str(text_path.relative_to(cfg.root)),
+        html_path=html_path.relative_to(cfg.data_dir).as_posix(),
+        text_path=text_path.relative_to(cfg.data_dir).as_posix(),
         built_at=now,
         stories=[(story.item_id, story.section_id) for story in content.stories],
         html_sha256=preflight.sha256(html_body),
@@ -231,44 +254,36 @@ def cmd_build(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) -
     )
     if size > render.GMAIL_CLIP_BYTES:
         log.warning("HTML is %.0f KB; Gmail clips messages above ~102 KB. Lower issue.max_stories.", size / 1000)
-    return 0
+    return issue_date
 
 
-def cmd_send(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) -> int:
-    if args.date:
-        issue = db.get_issue(conn, args.date.isoformat())
-    else:
-        issue = db.latest_unsent_issue(conn)
+def send_issue(cfg: Config, conn: sqlite3.Connection, profile: MailProfile, *, issue_date: date | None = None) -> int:
+    """Send with the given mail profile. Test copies go only to TEST_RECIPIENTS and mark nothing as sent."""
+    issue = db.get_issue(conn, issue_date.isoformat()) if issue_date else db.latest_unsent_issue(conn)
     if issue is None:
         log.error("No built issue found to send. Run 'build' first.")
         return 1
-    testing = args.test is not None
-    if not testing and issue["status"] == "sent":
-        log.error("Issue %s was already sent to everyone", issue["issue_date"])
-        return 1
+    if not profile.is_test:
+        if issue["status"] == "sent":
+            log.error("Issue %s was already sent to everyone", issue["issue_date"])
+            return 1
+        if not profile.send_enabled:
+            log.error(
+                "Production sending is off, so issue %s was not sent. Set PROD_SEND_ENABLED=true to send it; "
+                "test copies (--test) are not affected.",
+                issue["issue_date"],
+            )
+            return 1
 
     bodies = _read_issue_files(cfg, issue)
     if bodies is None:
         return 1
     html_body, text_body = bodies
-    smtp = SmtpSettings.from_env()
     images = render.inline_images(cfg)
-    sending = cfg.security.sending
 
-    def make_message(recipient: str, subject: str = issue["subject"]):
-        return build_message(
-            subject=subject,
-            html_body=html_body,
-            text_body=text_body,
-            sender=smtp.sender,
-            sender_name=smtp.sender_name,
-            recipient=recipient,
-            inline_images=images,
-            reply_to=sending.reply_to or None,
-            unsubscribe_mailbox=_unsubscribe_mailbox(cfg, smtp.sender),
-        )
+    def make_message(recipient: str):
+        return _message(cfg, profile, profile.subject(issue["subject"]), html_body, text_body, recipient, images)
 
-    requested = (args.test or list(cfg.delivery.recipients)) if testing else list(cfg.delivery.recipients)
     with DnsResolver() as resolver:
         report = preflight.run_preflight(
             cfg,
@@ -276,10 +291,10 @@ def cmd_send(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) ->
             issue,
             html_body=html_body,
             text_body=text_body,
-            requested_recipients=requested,
+            requested_recipients=profile.recipients,
             make_message=make_message,
-            sender=smtp.sender,
-            smtp_host=smtp.host,
+            sender=profile.sender,
+            smtp_host=profile.server_host,
             resolver=resolver,
         )
     for finding in report.findings:
@@ -290,24 +305,40 @@ def cmd_send(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) ->
         return 1
     recipients = report.recipients.accepted
     skipped = len(report.recipients.rejected)
+    delay = cfg.security.sending.delay_seconds
+    log.info(
+        "Sending issue %s with the %s profile (%s, from %s) to %d recipient(s) from %s",
+        issue["issue_date"],
+        profile.name,
+        profile.provider,
+        profile.sender,
+        len(recipients),
+        profile.recipients_source,
+    )
 
-    if testing:
-        with SmtpTransport(smtp) as transport:
+    if profile.is_test:
+        failed = 0
+        with profile.transport() as transport:
             for index, recipient in enumerate(recipients):
-                if index and sending.delay_seconds:
-                    time.sleep(sending.delay_seconds)
-                transport.send(make_message(recipient, subject=f"[TEST] {issue['subject']}"))
+                if index and delay:
+                    time.sleep(delay)
+                try:
+                    transport.send(make_message(recipient))
+                except RecipientRejected as exc:
+                    failed += 1
+                    log.error("Test copy to %s was refused: %s", recipient, exc)
+                    continue
                 log.info("Sent test copy of issue %s to %s", issue["issue_date"], recipient)
-        return 1 if skipped else 0
+        return 1 if skipped or failed else 0
 
-    with SmtpTransport(smtp) as transport:
+    with profile.transport() as transport:
         delivery = deliver_issue(
             conn,
             issue,
             recipients,
             transport,
             make_message,
-            pause_seconds=sending.delay_seconds,
+            pause_seconds=delay,
             suppress_after=cfg.security.recipients.suppress_after_hard_failures,
         )
     log.info(
@@ -365,6 +396,7 @@ def cmd_security(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace
 
 
 def _security_check(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) -> int:
+    profile = load_profile(TEST if args.test else PRODUCTION, cfg)
     issue = db.get_issue(conn, args.date.isoformat()) if args.date else db.latest_unsent_issue(conn)
     if args.date and issue is None:
         print(f"No issue has been built for {args.date}.")
@@ -375,21 +407,7 @@ def _security_check(cfg: Config, conn: sqlite3.Connection, args: argparse.Namesp
         if bodies is None:
             return 1
         html_body, text_body = bodies
-
-    sender, smtp_host = os.environ.get("MAIL_FROM"), os.environ.get("SMTP_HOST")
-
-    def make_message(recipient: str):
-        return build_message(
-            subject=issue["subject"] if issue is not None else render.make_subject(cfg, date.today()),
-            html_body=html_body,
-            text_body=text_body,
-            sender=sender or "brief@rankuno.com",
-            sender_name=os.environ.get("MAIL_FROM_NAME", ""),
-            recipient=recipient,
-            inline_images=render.inline_images(cfg),
-            reply_to=cfg.security.sending.reply_to or None,
-            unsubscribe_mailbox=_unsubscribe_mailbox(cfg, sender or "brief@rankuno.com"),
-        )
+    subject = profile.subject(issue["subject"] if issue is not None else render.make_subject(cfg, date.today()))
 
     with DnsResolver() as resolver:
         report = preflight.run_preflight(
@@ -398,10 +416,10 @@ def _security_check(cfg: Config, conn: sqlite3.Connection, args: argparse.Namesp
             issue,
             html_body=html_body,
             text_body=text_body,
-            requested_recipients=cfg.delivery.recipients,
-            make_message=make_message,
-            sender=sender,
-            smtp_host=smtp_host,
+            requested_recipients=profile.recipients,
+            make_message=lambda recipient: _message(cfg, profile, subject, html_body, text_body, recipient),
+            sender=profile.sender,
+            smtp_host=profile.server_host,
             resolver=resolver,
         )
 
@@ -411,6 +429,9 @@ def _security_check(cfg: Config, conn: sqlite3.Connection, args: argparse.Namesp
         print(f"SECURITY CHECK  issue {issue['issue_date']} (No. {issue['number']}, built {built} UTC)")
     else:
         print("SECURITY CHECK  no unsent issue is built yet, so only the recipients and the sender are checked")
+    print("\nMAIL PROFILE")
+    for line in profile.describe():
+        print(f"  {line}")
     print()
     for check in report.checks:
         found = report.for_check(check)
@@ -427,8 +448,7 @@ def _security_check(cfg: Config, conn: sqlite3.Connection, args: argparse.Namesp
                 print(f"  - [{finding.check}] {finding.message}")
 
     accepted = report.recipients.accepted
-    source = cfg.delivery.recipients_file.relative_to(cfg.root) if cfg.delivery.recipients_file else "settings.yaml"
-    print(f"\nRECIPIENTS  {len(accepted)} will receive it, {len(report.recipients.rejected)} skipped  ({source})")
+    print(f"\nRECIPIENTS  {len(accepted)} will receive it, {len(report.recipients.rejected)} skipped  ({profile.recipients_source})")
     for address in accepted[:50]:
         print(f"  {address}")
     if len(accepted) > 50:
@@ -443,8 +463,6 @@ def _security_check(cfg: Config, conn: sqlite3.Connection, args: argparse.Namesp
             print(f"  DKIM:  signed by {sender_report.provider}")
         else:
             print(f"  DKIM:  {', '.join(sender_report.dkim_selectors) or 'none found'}")
-    else:
-        print("\nSENDER  not checked: set MAIL_FROM and SMTP_HOST in .env")
 
     now, scorer = datetime.now(timezone.utc), Scorer(cfg.taxonomy)
     held = [
@@ -455,7 +473,13 @@ def _security_check(cfg: Config, conn: sqlite3.Connection, args: argparse.Namesp
     if held:
         print(f"\nCONTENT SCREEN  {len(held)} stor{'y' if len(held) == 1 else 'ies'} from the last 14 days held for review: security review")
 
-    print("\nRESULT  " + ("BLOCKED: fix the errors above; nothing would be sent." if report.blocked else "Ready to send."))
+    if report.blocked:
+        result = "BLOCKED: fix the errors above; nothing would be sent."
+    elif not profile.send_enabled:
+        result = "Checks pass, but production sending is off (PROD_SEND_ENABLED)."
+    else:
+        result = "Ready to send."
+    print(f"\nRESULT  {result}")
     return 1 if report.blocked else 0
 
 
@@ -544,6 +568,24 @@ def _security_scan(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespa
 # Helpers ----------------------------------------------------------------------------------------
 
 
+def _message(cfg: Config, profile: MailProfile | None, subject: str, html_body: str, text_body: str,
+             recipient: str, images=None):
+    sender = profile.sender if profile else "brief@rankuno.com"
+    reply_to = profile.reply_to if profile else (cfg.security.sending.reply_to or None)
+    sending = cfg.security.sending
+    return build_message(
+        subject=subject,
+        html_body=html_body,
+        text_body=text_body,
+        sender=sender,
+        sender_name=profile.sender_name if profile else cfg.newsletter.name,
+        recipient=recipient,
+        inline_images=images if images is not None else render.inline_images(cfg),
+        reply_to=reply_to,
+        unsubscribe_mailbox=(sending.unsubscribe_mailbox or reply_to or sender) if sending.list_unsubscribe else None,
+    )
+
+
 def _log_screen(label: str, verdicts: list[Verdict]) -> None:
     counts = {decision: sum(verdict.decision == decision for verdict in verdicts) for decision in ("blocked", "held", "approved")}
     if any(counts.values()):
@@ -570,11 +612,20 @@ def _would_qualify(cfg: Config, scorer: Scorer, row: sqlite3.Row, now: datetime)
     return result is not None and result.score >= cfg.issue.min_score
 
 
+def issue_file(cfg: Config, stored: str) -> Path:
+    """Issue files are stored relative to the data directory; issues built before DATA_DIR existed, to the project."""
+    path = Path(stored)
+    if path.is_absolute():
+        return path
+    in_data_dir = cfg.data_dir / path
+    return in_data_dir if in_data_dir.exists() or not (cfg.root / path).exists() else cfg.root / path
+
+
 def _read_issue_files(cfg: Config, issue: sqlite3.Row) -> tuple[str, str] | None:
     try:
         return (
-            (cfg.root / issue["html_path"]).read_text(encoding="utf-8"),
-            (cfg.root / issue["text_path"]).read_text(encoding="utf-8"),
+            issue_file(cfg, issue["html_path"]).read_text(encoding="utf-8"),
+            issue_file(cfg, issue["text_path"]).read_text(encoding="utf-8"),
         )
     except FileNotFoundError as exc:
         log.error("The email files for issue %s are missing (%s). Run 'build' again.", issue["issue_date"], exc.filename)
@@ -586,14 +637,7 @@ def _preview_recipient(cfg: Config) -> str:
     return next(valid, "preview@rankuno.com")
 
 
-def _unsubscribe_mailbox(cfg: Config, sender: str) -> str | None:
-    sending = cfg.security.sending
-    if not sending.list_unsubscribe:
-        return None
-    return sending.unsubscribe_mailbox or sending.reply_to or sender
-
-
-def _setup_logging(cfg: Config) -> None:
+def setup_logging(cfg: Config) -> None:
     log_dir: Path = cfg.data_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     formatter = logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s", "%Y-%m-%d %H:%M:%S")

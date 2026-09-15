@@ -143,10 +143,11 @@ class Config:
     security: SecurityPolicy
     exclude_publishers: tuple[str, ...] = ()  # names or domains, e.g. press-release wires
     trusted_publishers: tuple[str, ...] = ()  # names or domains exempt from a source's min_coverage
+    data_root: Path | None = None  # DATA_DIR: database, issues and logs; on a host, a persistent volume
 
     @property
     def data_dir(self) -> Path:
-        return self.root / "data"
+        return self.data_root or self.root / "data"
 
     @property
     def db_path(self) -> Path:
@@ -192,6 +193,7 @@ def load_config(root: Path = ROOT) -> Config:
             security=parse_policy(security_doc, content_filter_doc),
             exclude_publishers=tuple(str(entry) for entry in sources_doc.get("exclude_publishers") or ()),
             trusted_publishers=tuple(str(entry) for entry in sources_doc.get("trusted_publishers") or ()),
+            data_root=Path(os.environ["DATA_DIR"]) if os.environ.get("DATA_DIR", "").strip() else None,
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ConfigError(f"Invalid configuration: {exc}") from exc

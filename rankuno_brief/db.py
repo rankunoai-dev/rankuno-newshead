@@ -298,6 +298,18 @@ def latest_unsent_issue(conn: sqlite3.Connection) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM issues WHERE status = 'built' ORDER BY issue_date DESC LIMIT 1").fetchone()
 
 
+def latest_built_issue(conn: sqlite3.Connection) -> sqlite3.Row | None:
+    """The most recently built issue, sent or not, with its story count."""
+    return conn.execute(
+        "SELECT i.*, (SELECT COUNT(*) FROM issue_items ii WHERE ii.issue_id = i.id) AS story_count "
+        "FROM issues i ORDER BY i.built_at DESC LIMIT 1"
+    ).fetchone()
+
+
+def last_fetch_run(conn: sqlite3.Connection) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM fetch_runs ORDER BY started_at DESC LIMIT 1").fetchone()
+
+
 def save_issue(
     conn: sqlite3.Connection,
     *,
