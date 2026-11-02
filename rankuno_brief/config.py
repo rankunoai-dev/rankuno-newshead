@@ -49,6 +49,7 @@ class Source:
     weight: float = 1.0
     require_keywords: bool = False
     community: bool = False
+    personal_only: bool = False  # used only by the client feeds; the general brief never includes these
     max_per_issue: int | None = None
     enabled: bool = True
 

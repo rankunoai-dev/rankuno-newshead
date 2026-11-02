@@ -401,3 +401,30 @@ sources:
     require_keywords: true
     max_per_issue: 2
     enabled: false
+
+# Client feeds only (personal_only: true). The general brief never uses these, so it is unchanged.
+  - id: trade-supply-chain-dive
+    name: "Supply Chain Dive"
+    url: https://www.supplychaindive.com/feeds/news/
+    section: martech_analytics
+    personal_only: true
+
+  - id: trade-supply-chain-brain
+    name: "Supply Chain Brain"
+    url: https://www.supplychainbrain.com/rss/articles
+    section: martech_analytics
+    personal_only: true
+
+  - id: google-news-gep-competitors
+    name: "Google News: GEP and competitors"
+    type: google_news
+    query: '("GEP" OR "Coupa" OR "SAP Ariba" OR "Ivalua" OR "Zycus" OR "Basware") ("procurement" OR "supply chain")'
+    section: martech_analytics
+    personal_only: true
+
+  - id: google-news-procurement-innovation
+    name: "Google News: procurement innovation"
+    type: google_news
+    query: '("procurement software" OR "source-to-pay" OR "spend management" OR "e-procurement")'
+    section: martech_analytics
+    personal_only: true
