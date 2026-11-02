@@ -428,3 +428,17 @@ sources:
     query: '("procurement software" OR "source-to-pay" OR "spend management" OR "e-procurement")'
     section: martech_analytics
     personal_only: true
+
+  - id: google-news-highradius-competitors
+    name: "Google News: HighRadius and competitors"
+    type: google_news
+    query: '("HighRadius" OR "BlackLine" OR "Billtrust" OR "Kyriba" OR "Serrala" OR "Versapay") ("order-to-cash" OR "accounts receivable" OR "treasury" OR "B2B payments")'
+    section: martech_analytics
+    personal_only: true
+
+  - id: google-news-fintech-o2c
+    name: "Google News: Order-to-Cash and Treasury"
+    type: google_news
+    query: '("order-to-cash" OR "accounts receivable automation" OR "cash forecasting" OR "credit-to-cash" OR "autonomous finance")'
+    section: martech_analytics
+    personal_only: true
