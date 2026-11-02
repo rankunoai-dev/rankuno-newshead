@@ -7,6 +7,7 @@ appear in emails: they only remove one recipient from one client's feed, so they
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import secrets
 import sqlite3
@@ -26,7 +27,13 @@ CREATE TABLE IF NOT EXISTS personal_people (
     role        TEXT NOT NULL,            -- admin | manager
     active      INTEGER NOT NULL DEFAULT 1,
     created_at  TEXT NOT NULL,
-    approved_at TEXT                      -- managers can activate clients only once approved; admins from the start
+    approved_at TEXT,                     -- managers can activate clients only once approved; admins from the start
+    shared      INTEGER NOT NULL DEFAULT 0  -- 1 = the shared admin login, not a person; never emailed
+);
+
+CREATE TABLE IF NOT EXISTS personal_settings (
+    key    TEXT PRIMARY KEY,
+    value  TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS personal_invites (
@@ -149,8 +156,24 @@ DEFAULT_ADMINS = (
 def connect(db_path: Path | str) -> sqlite3.Connection:
     conn = db.connect(db_path)
     conn.executescript(SCHEMA)
+    _migrate(conn)
     seed_default_admins(conn)
     return conn
+
+
+# Columns added after the first personal-feed release: (table, column, definition).
+_ADDED_COLUMNS = (
+    ("personal_people", "approved_at", "TEXT"),
+    ("personal_people", "shared", "INTEGER NOT NULL DEFAULT 0"),
+)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    for table, column, definition in _ADDED_COLUMNS:
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            with conn:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def seed_default_admins(conn: sqlite3.Connection, now: datetime | None = None) -> None:
@@ -560,3 +583,78 @@ def audit(conn: sqlite3.Connection, actor: str, action: str, target: str, detail
 
 def recent_audit(conn: sqlite3.Connection, limit: int = 40) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM personal_audit ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+
+
+# Shared admin login ---------------------------------------------------------------------------------
+
+SHARED_EMAIL = "shared-admin"  # a label, not an address: the shared login is never emailed
+SHARED_USERNAME_KEY = "shared_admin_username"
+SHARED_PASSWORD_KEY = "shared_admin_password"
+DEFAULT_SHARED_USERNAME = "admin"
+MIN_PASSWORD_LENGTH = 12
+_PBKDF2_ROUNDS = 200_000
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, _PBKDF2_ROUNDS)
+    return f"pbkdf2_sha256${_PBKDF2_ROUNDS}${salt.hex()}${digest.hex()}"
+
+
+def verify_password(password: str, stored: str | None) -> bool:
+    if not stored:
+        return False
+    try:
+        _, rounds, salt_hex, digest_hex = stored.split("$")
+    except ValueError:
+        return False
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt_hex), int(rounds))
+    return hmac.compare_digest(digest.hex(), digest_hex)
+
+
+def get_setting(conn: sqlite3.Connection, key: str) -> str | None:
+    row = conn.execute("SELECT value FROM personal_settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
+    with conn:
+        conn.execute(
+            "INSERT INTO personal_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+
+
+def shared_username(conn: sqlite3.Connection) -> str:
+    return get_setting(conn, SHARED_USERNAME_KEY) or DEFAULT_SHARED_USERNAME
+
+
+def shared_password_set(conn: sqlite3.Connection) -> bool:
+    return get_setting(conn, SHARED_PASSWORD_KEY) is not None
+
+
+def set_shared_password(conn: sqlite3.Connection, password: str) -> None:
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise ValueError(f"The password must be at least {MIN_PASSWORD_LENGTH} characters")
+    set_setting(conn, SHARED_PASSWORD_KEY, hash_password(password))
+
+
+def check_shared_login(conn: sqlite3.Connection, username: str, password: str) -> bool:
+    if not shared_password_set(conn):
+        return False
+    username_ok = hmac.compare_digest(username.encode("utf-8"), shared_username(conn).encode("utf-8"))
+    password_ok = verify_password(password, get_setting(conn, SHARED_PASSWORD_KEY))
+    return username_ok and password_ok
+
+
+def ensure_shared_admin(conn: sqlite3.Connection, now: datetime) -> sqlite3.Row:
+    """The admin identity used by shared-login sessions. Its actions are recorded under this name."""
+    with conn:
+        conn.execute(
+            """INSERT INTO personal_people (email, name, role, active, created_at, approved_at, shared)
+               VALUES (?, 'Shared admin login', 'admin', 1, ?, ?, 1)
+               ON CONFLICT(email) DO UPDATE SET role = 'admin', active = 1, shared = 1,
+                   approved_at = COALESCE(personal_people.approved_at, excluded.approved_at)""",
+            (SHARED_EMAIL, _iso(now), _iso(now)),
+        )
+    return conn.execute("SELECT * FROM personal_people WHERE email = ?", (SHARED_EMAIL,)).fetchone()

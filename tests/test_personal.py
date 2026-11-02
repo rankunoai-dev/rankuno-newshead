@@ -675,11 +675,90 @@ def test_manager_edit_of_an_active_client_notifies_the_admins(monkeypatch, web_d
         ["rajat.singh@rankuno.com", "naeem.gari@rankuno.com", "prithviraj.pednekar@rankuno.com"])
 
 
-def test_password_login_is_gone(web_db):
+PASSWORD = "correct horse battery"
+
+
+def set_shared(conn, password=PASSWORD):
+    store.set_setting(conn, store.SHARED_USERNAME_KEY, "admin")
+    store.set_shared_password(conn, password)
+
+
+def test_shared_login_opens_the_dashboard_and_wrong_password_does_not(monkeypatch, web_db):
+    cfg, pconn = web_db
+    monkeypatch.setattr(web.time, "sleep", lambda seconds: None)
+    set_shared(pconn)
+    app = web.PersonalWeb(cfg, "https://brief.example.com")
+    bad = call(app, "POST", "/login", up.urlencode([("username", "admin"), ("password", "wrong")]))
+    assert bad.status == 200 and "not correct" in bad.text
+    good = call(app, "POST", "/login", up.urlencode([("username", "admin"), ("password", PASSWORD)]))
+    assert good.status == 303 and good.header("Location") == "/a/"
+    cookie = good.header("Set-Cookie").split(";")[0].split("=", 1)[1]
+    dashboard = call(app, "GET", "/a/", cookie=cookie)
+    assert dashboard.status == 200 and "Shared admin login" in dashboard.text
+
+
+def test_dashboard_redirects_to_login_without_a_session(web_db):
     cfg, _ = web_db
     app = web.PersonalWeb(cfg, "https://brief.example.com")
-    assert not web.is_personal_path("/login")
-    assert not hasattr(app, "admin_token")
+    assert call(app, "GET", "/a/").status == 303
+
+
+def test_admin_changes_the_shared_password_and_the_old_one_stops_working(monkeypatch, web_db):
+    cfg, pconn = web_db
+    monkeypatch.setattr(web.time, "sleep", lambda seconds: None)
+    set_shared(pconn)
+    app = web.PersonalWeb(cfg, "https://brief.example.com")
+    good = call(app, "POST", "/login", up.urlencode([("username", "admin"), ("password", PASSWORD)]))
+    cookie = good.header("Set-Cookie").split(";")[0].split("=", 1)[1]
+    csrf = store.session_for(pconn, cookie, REAL)["csrf"]
+    body = up.urlencode([("csrf", csrf), ("current", "wrong-current-pw"), ("new", "a brand new password"), ("confirm", "a brand new password")])
+    assert "not correct" in call(app, "POST", "/a/password", body, cookie=cookie).text
+    body = up.urlencode([("csrf", csrf), ("current", PASSWORD), ("new", "a brand new password"), ("confirm", "a brand new password")])
+    assert "was changed" in call(app, "POST", "/a/password", body, cookie=cookie).text
+    assert not store.check_shared_login(pconn, "admin", PASSWORD)
+    assert store.check_shared_login(pconn, "admin", "a brand new password")
+    actions = [row["action"] for row in store.recent_audit(pconn)]
+    assert "password.change" in actions
+
+
+def test_short_passwords_are_refused(web_db):
+    _, pconn = web_db
+    with pytest.raises(ValueError):
+        store.set_shared_password(pconn, "short")
+
+
+def test_the_shared_login_is_never_emailed(web_db):
+    _, pconn = web_db
+    store.ensure_shared_admin(pconn, REAL)
+    emails = [person["email"] for person in notify.admins(pconn)]
+    assert store.SHARED_EMAIL not in emails
+    assert "rajat.singh@rankuno.com" in emails
+
+
+def test_status_page_accepts_the_shared_username_and_password(monkeypatch, web_db):
+    import base64
+
+    from rankuno_brief.server import App
+
+    cfg, pconn = web_db
+    set_shared(pconn)
+    app = App(cfg, token="k" * 40)
+    good = "Basic " + base64.b64encode(f"admin:{PASSWORD}".encode()).decode()
+    wrong = "Basic " + base64.b64encode(b"admin:nope-not-it").decode()
+    assert app.shared_login_ok(good)
+    assert not app.shared_login_ok(wrong)
+
+
+def test_first_start_takes_the_password_from_admin_password_once(monkeypatch, web_db):
+    from rankuno_brief.server import App
+
+    cfg, pconn = web_db
+    monkeypatch.setenv("ADMIN_PASSWORD", "first start password")
+    App(cfg, token="k" * 40)
+    assert store.check_shared_login(pconn, "admin", "first start password")
+    monkeypatch.setenv("ADMIN_PASSWORD", "a different one entirely")
+    App(cfg, token="k" * 40)  # already set: the environment variable is ignored now
+    assert store.check_shared_login(pconn, "admin", "first start password")
 
 
 # Custom operating industry ------------------------------------------------------------------------

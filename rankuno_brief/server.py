@@ -37,6 +37,7 @@ from .config import Config, ConfigError
 from .mail_profiles import PRODUCTION, TEST, load_profile, production_sending_enabled
 from .mailer import MailError
 from .personal import feed as personal_feed
+from .personal import store as personal_store
 from .personal import web as personal_web
 from .personal.settings import cached_settings as personal_settings
 from .personal.settings import personal_sending_enabled as personal_sending_on
@@ -177,6 +178,7 @@ class App:
         self.token = token
         self.runner = JobRunner(cfg)
         self.state = ScheduleState()
+        self._bootstrap_shared_login()
         self.personal = None  # personalised client feeds: pages need PERSONAL_BASE_URL
         try:
             base = public_base_url()
@@ -185,6 +187,33 @@ class App:
             base = None
         if base:
             self.personal = personal_web.PersonalWeb(cfg, base)
+
+    def _bootstrap_shared_login(self) -> None:
+        """First start only: the shared admin password comes from ADMIN_PASSWORD. After that it is changed in the
+        admin dashboard, and the environment variable is no longer used."""
+        conn = personal_store.connect(self.cfg.db_path)
+        try:
+            if not personal_store.shared_password_set(conn):
+                initial = os.environ.get("ADMIN_PASSWORD", "").strip()
+                if initial:
+                    try:
+                        personal_store.set_shared_password(conn, initial)
+                        log.info("Shared admin login set from ADMIN_PASSWORD. Change it in the admin dashboard.")
+                    except ValueError as exc:
+                        log.error("ADMIN_PASSWORD is not used: %s", exc)
+        finally:
+            conn.close()
+
+    def shared_login_ok(self, header: str | None) -> bool:
+        """The shared admin username and password, sent as HTTP Basic (the browser prompt on the status page)."""
+        credentials = basic_credentials(header)
+        if credentials is None:
+            return False
+        conn = personal_store.connect(self.cfg.db_path)
+        try:
+            return personal_store.check_shared_login(conn, *credentials)
+        finally:
+            conn.close()
 
     # Jobs the admin page and the schedule start
     def start_test(self) -> bool:
@@ -243,6 +272,21 @@ class App:
 
 
 # HTTP -----------------------------------------------------------------------------------------------
+
+
+def basic_credentials(header: str | None) -> tuple[str, str] | None:
+    """(username, password) from an HTTP Basic header, or None."""
+    if not header:
+        return None
+    scheme, _, value = header.strip().partition(" ")
+    if scheme.lower() != "basic":
+        return None
+    try:
+        decoded = base64.b64decode(value.strip(), validate=True).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError):
+        return None
+    username, separator, password = decoded.partition(":")
+    return (username, password) if separator else None
 
 
 def authorized(header: str | None, token: str) -> bool:
@@ -323,7 +367,8 @@ class AdminHandler(BaseHTTPRequestHandler):
         if not self.app.token:
             self._send(404, "Not found", "text/plain; charset=utf-8")  # admin page switched off
             return False
-        if authorized(self.headers.get("Authorization"), self.app.token):
+        header = self.headers.get("Authorization")
+        if authorized(header, self.app.token) or self.app.shared_login_ok(header):
             return True
         self.send_response(401)
         self.send_header("WWW-Authenticate", 'Basic realm="The RankUno Brief admin", charset="UTF-8"')

@@ -57,4 +57,4 @@ def notify_people(
 
 
 def admins(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    return [row for row in store.people(conn) if row["role"] == "admin" and row["active"]]
+    return [row for row in store.people(conn) if row["role"] == "admin" and row["active"] and not row["shared"]]

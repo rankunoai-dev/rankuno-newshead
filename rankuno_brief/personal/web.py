@@ -22,6 +22,7 @@ import html
 import json
 import logging
 import sqlite3
+import time
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from http.cookies import SimpleCookie
@@ -102,7 +103,7 @@ def _logo_data_uri(path: str) -> str:
 
 
 ROUTE_PREFIXES = ("/m/", "/p/", "/a/", "/u/")
-ROUTE_EXACT = ("/p", "/a", "/logout")
+ROUTE_EXACT = ("/p", "/a", "/logout", "/login")
 MESSAGES = {
     "saved": "Saved.",
     "activated": "Saved and activated: the next weekly feed includes this client.",
@@ -139,6 +140,8 @@ class PersonalWeb:
             conn.close()
 
     def _route(self, handler, method, path, form, conn, now) -> None:
+        if path == "/login":
+            return self._shared_login(handler, method, form, conn, now)
         if path.startswith("/m/"):
             return self._sign_in(handler, method, path[3:], conn, now)
         if path.startswith("/u/"):
@@ -148,6 +151,8 @@ class PersonalWeb:
 
         person = store.session_for(conn, _cookie(handler), now)
         if person is None:
+            if method == "GET" and path.startswith(("/a", "/p")):
+                return self._redirect(handler, "/login")
             return self._page(handler, 401, "Sign in", "<p>Open the sign-in link from your email to continue. "
                               "If it has expired, ask an admin for a new one.</p>")
         if path in ("/p", "/p/") and method == "GET":
@@ -162,6 +167,8 @@ class PersonalWeb:
             return self._client_route(handler, method, path, person, form, conn, now)
         if path in ("/a", "/a/") and method == "GET":
             return self._admin_home(handler, person, conn, now)
+        if path == "/a/password" and method == "POST":
+            return self._change_password(handler, person, form, conn, now)
         if path.startswith("/a/") and method == "POST":
             return self._admin_action(handler, person, path, form, conn, now)
         return self._page(handler, 404, "Not found", "<p>Not found.</p>", person=person)
@@ -180,6 +187,50 @@ class PersonalWeb:
         token, _ = store.create_session(conn, person["id"], now, self.settings.session_days)
         target = "/a/" if person["role"] == "admin" else "/p/"
         self._redirect(handler, target, cookie=self._cookie_header(token, self.settings.session_days))
+
+    def _shared_login(self, handler, method, form, conn, now) -> None:
+        error = ""
+        if method == "POST":
+            username = (_field(form, "username") or "").strip()
+            password = _field(form, "password") or ""
+            if store.check_shared_login(conn, username, password):
+                admin = store.ensure_shared_admin(conn, now)
+                token, _ = store.create_session(conn, admin["id"], now, self.settings.session_days)
+                return self._redirect(handler, "/a/", cookie=self._cookie_header(token, self.settings.session_days))
+            time.sleep(1)  # slows down guessing
+            error = "The username or password is not correct."
+        body = f"""<p class="kicker">Admin sign-in</p>
+<h1>Sign in to the admin dashboard</h1>
+{f'<p class="error">{_e(error)}</p>' if error else ''}
+<form method="post" action="/login" class="stack" style="max-width: 420px;">
+<label>Username<input name="username" autocomplete="username" required></label>
+<label>Password<input type="password" name="password" autocomplete="current-password" required></label>
+<div class="actions"><button>Sign in</button></div>
+</form>
+<p class="hint">Managers sign in from the link in their email.</p>"""
+        self._page(handler, 200, "Sign in", body)
+
+    def _change_password(self, handler, person, form, conn, now) -> None:
+        if not _csrf_ok(form, person):
+            return self._page(handler, 403, "Refused", "<p>Your session has expired.</p>", person=person)
+        current = _field(form, "current") or ""
+        new = _field(form, "new") or ""
+        confirm = _field(form, "confirm") or ""
+        username = store.shared_username(conn)
+        if not store.check_shared_login(conn, username, current):
+            notice = "The current password is not correct."
+        elif new != confirm:
+            notice = "The new passwords do not match."
+        else:
+            try:
+                store.set_shared_password(conn, new)
+            except ValueError as exc:
+                notice = str(exc)
+            else:
+                store.audit(conn, person["email"], "password.change", username, "shared admin login", now=now)
+                return self._admin_home(handler, person, conn, now,
+                                        notice_html='<p class="ok">The password was changed. Use the new one next time.</p>')
+        return self._admin_home(handler, person, conn, now, notice_html=f'<p class="error">{_e(notice)}</p>')
 
     def _logout(self, handler, form, conn, now) -> None:
         raw = _cookie(handler)
@@ -480,6 +531,17 @@ Ask an admin to send you a new one.</p>""")
 {notice_html}
 <p>Weekly feed: <strong>{'ON' if personal_sending_enabled() else 'OFF'}</strong> (PERSONAL_SEND_ENABLED).
 Today's run: {_e(run['status']) if run else 'not run yet'}.</p>
+<h2>Shared admin login</h2>
+<p class="hint">Username <strong>{_e(store.shared_username(conn))}</strong>. Share the password only with the three admins.</p>
+<form method="post" action="/a/password" class="stack">
+<input type="hidden" name="csrf" value="{csrf}">
+<div class="grid-2">
+<label>Current password<input type="password" name="current" autocomplete="current-password" required></label>
+<label>New password (at least 12 characters)<input type="password" name="new" autocomplete="new-password" minlength="12" required></label>
+</div>
+<label>Repeat the new password<input type="password" name="confirm" autocomplete="new-password" minlength="12" required></label>
+<div class="actions"><button class="secondary">Change password</button></div>
+</form>
 <h2>Approval requests</h2>
 <table>{requests_rows or '<tr><td class="muted">No requests waiting.</td></tr>'}</table>
 <h2>Invite a manager or admin</h2>
