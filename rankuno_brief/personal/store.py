@@ -392,6 +392,15 @@ def last_issue_at(conn: sqlite3.Connection, client_id: int) -> datetime | None:
     return db.from_iso(row["last"]) if row and row["last"] else None
 
 
+def delete_client(conn: sqlite3.Connection, client_id: int) -> None:
+    """Removes a client with its team list and feed history. Used only after the shared admin password is re-entered."""
+    with conn:
+        conn.execute("DELETE FROM personal_issue_items WHERE client_id = ?", (client_id,))
+        conn.execute("DELETE FROM personal_issues WHERE client_id = ?", (client_id,))
+        conn.execute("DELETE FROM personal_recipients WHERE client_id = ?", (client_id,))
+        conn.execute("DELETE FROM personal_clients WHERE id = ?", (client_id,))
+
+
 def client_suggested(row: sqlite3.Row) -> list[str]:
     return json.loads(row["suggested_json"])
 

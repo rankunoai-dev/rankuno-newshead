@@ -90,6 +90,10 @@ th { text-align: left; font-size: 11px; letter-spacing: 1px; text-transform: upp
 td { border-bottom: 1px solid #E6E6E6; padding: 9px 10px 9px 0; vertical-align: top; }
 pre { background: #F7F7F7; border: 1px solid #E6E6E6; padding: 10px; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
 .footer { color: #707070; font-size: 11px; border-top: 1px solid #E6E6E6; margin-top: 28px; padding-top: 12px; }
+form.rowform { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 8px 0; }
+form.rowform select, form.rowform input { display: inline-block; width: auto; margin: 0; padding: 6px 8px; font-size: 13px; }
+form.rowform button { padding: 7px 12px; font-size: 12px; text-transform: none; letter-spacing: 0; }
+button.danger { background: #A1161D; }
 @media (max-width: 640px) { .grid-2, .options { grid-template-columns: 1fr; } .card { padding: 20px 16px; } }
 """
 
@@ -508,24 +512,32 @@ Ask an admin to send you a new one.</p>""")
 <td><form method="post" action="/a/people/{p['id']}/invite"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary">New sign-in link</button></form></td></tr>"""
             for p in store.people(conn)
         )
-        managers = store.managers(conn)
+        choices = [p for p in store.people(conn) if p["role"] in ("manager", "admin") and p["active"] and not p["shared"]]
         client_rows = []
         for c in store.clients_of(conn):
             owner = store.person(conn, c["manager_id"])
+            menu = list(choices)
+            if owner is not None and owner["id"] not in [p["id"] for p in menu]:
+                menu.insert(0, owner)  # the current owner always shows, even if the menu would not list them
             options = "".join(
-                f'<option value="{m["id"]}"{" selected" if m["id"] == c["manager_id"] else ""}>{_e(m["email"])}</option>'
-                for m in managers
+                f'<option value="{p["id"]}"{" selected" if p["id"] == c["manager_id"] else ""}>{_e(p["email"])}</option>'
+                for p in menu
             )
             count = len(store.active_recipient_rows(conn, c["id"]))
             pending = "review pending" if c["suggested_json"] != "[]" and c["reviewed_at"] is None else ""
             client_rows.append(
                 f"""<tr><td><a href="/p/clients/{c['id']}">{_e(c['client_name'])}</a></td><td>{_e(owner['email'] if owner else '')}</td>
 <td>{_e(c['status'])} {pending}</td><td>{count}</td>
-<td><form method="post" action="/a/clients/{c['id']}/manager" class="inline"><input type="hidden" name="csrf" value="{csrf}">
-<select name="manager_id">{options}</select><button class="secondary">Reassign</button></form>
-<form method="post" action="/a/clients/{c['id']}/status" class="inline"><input type="hidden" name="csrf" value="{csrf}">
+<td>
+<form method="post" action="/a/clients/{c['id']}/manager" class="rowform"><input type="hidden" name="csrf" value="{csrf}">
+<select name="manager_id" aria-label="Owner">{options}</select><button class="secondary">Reassign</button></form>
+<form method="post" action="/a/clients/{c['id']}/status" class="rowform"><input type="hidden" name="csrf" value="{csrf}">
 <input type="hidden" name="status" value="{'paused' if c['status'] == 'active' else 'active'}">
-<button class="secondary">{'Pause' if c['status'] == 'active' else 'Resume'}</button></form></td></tr>"""
+<button class="secondary">{'Pause' if c['status'] == 'active' else 'Resume'}</button></form>
+<form method="post" action="/a/clients/{c['id']}/delete" class="rowform"><input type="hidden" name="csrf" value="{csrf}">
+<input type="password" name="password" placeholder="Shared admin password" autocomplete="current-password" required>
+<button class="danger">Delete</button></form>
+</td></tr>"""
             )
         audit_rows = "".join(
             f"<tr><td>{self._when(a['at'])}</td><td>{_e(a['actor'])}</td><td>{_e(a['action'])}</td>"
@@ -585,6 +597,8 @@ Today's run: {_e(run['status']) if run else 'not run yet'}.</p>
             row = store.client(conn, int(parts[3]))
             if row is None:
                 return self._redirect(handler, "/a/")
+            if parts[4] == "delete":
+                return self._delete_client(handler, person, row, form, conn, now)
             if parts[4] == "manager":
                 manager = store.person(conn, int(_field(form, "manager_id") or 0))
                 if manager is not None and manager["role"] in ("manager", "admin") and manager["active"]:
@@ -595,6 +609,17 @@ Today's run: {_e(run['status']) if run else 'not run yet'}.</p>
                 store.audit(conn, person["email"], f"client.{_field(form, 'status')}", row["client_name"], now=now)
             return self._redirect(handler, "/a/")
         return self._page(handler, 404, "Not found", "<p>Not found.</p>", person=person)
+
+    def _delete_client(self, handler, person, row, form, conn, now) -> None:
+        password = _field(form, "password") or ""
+        if not store.check_shared_login(conn, store.shared_username(conn), password):
+            time.sleep(1)  # slows down guessing
+            return self._admin_home(handler, person, conn, now,
+                                    notice_html='<p class="error">The shared admin password is not correct. Nothing was deleted.</p>')
+        name = row["client_name"]
+        store.delete_client(conn, row["id"])
+        store.audit(conn, person["email"], "client.delete", name, f"client {row['id']}", now=now)
+        return self._admin_home(handler, person, conn, now, notice_html=f'<p class="ok">{_e(name)} was deleted.</p>')
 
     def _decide(self, handler, person, request_id: int, approve: bool, form, conn, now) -> None:
         reason = (_field(form, "reason") or "").strip()[:500]

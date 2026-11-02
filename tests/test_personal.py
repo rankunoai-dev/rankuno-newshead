@@ -859,3 +859,42 @@ def test_an_admin_can_add_another_admin_from_the_dashboard(monkeypatch, web_db, 
     assert new_admin["role"] == "admin" and store.is_approved(new_admin)
     assert "shreya.kale@rankuno.com" in [person["email"] for person in notify.admins(pconn)]
     assert store.recent_audit(pconn)[0]["action"] == "invite.create"
+
+
+def test_reassign_menu_shows_the_current_owner_and_admins(monkeypatch, web_db):
+    cfg, pconn = web_db
+    monkeypatch.setattr(web, "DnsResolver", lambda *a, **k: dns())
+    app = web.PersonalWeb(cfg, "https://brief.example.com")
+    shared = store.ensure_shared_admin(pconn, REAL)
+    client = store.create_client(pconn, shared["id"], data_for("GEP"), REAL)
+    admin = store.person_by_email(pconn, "rajat.singh@rankuno.com")
+    raw, _ = store.create_session(pconn, admin["id"], REAL, 14)
+    page = call(app, "GET", "/a/", cookie=raw)
+    assert f'<option value="{shared["id"]}" selected>shared-admin</option>' in page.text
+    assert "naeem.gari@rankuno.com" in page.text
+    assert client  # the client exists in the menu
+
+
+def test_delete_needs_the_shared_password_and_removes_the_client(monkeypatch, web_db):
+    cfg, pconn = web_db
+    monkeypatch.setattr(web.time, "sleep", lambda seconds: None)
+    set_shared(pconn)
+    manager = store.add_person(pconn, "lead@rankuno.com", "Lead", "manager", REAL)
+    store.approve_person(pconn, manager, REAL)
+    client = store.create_client(pconn, manager, data_for("GEP"), REAL)
+    store.add_recipients(pconn, client, ["ann@rankuno.com"], REAL)
+    admin = store.person_by_email(pconn, "rajat.singh@rankuno.com")
+    raw, csrf = store.create_session(pconn, admin["id"], REAL, 14)
+    app = web.PersonalWeb(cfg, "https://brief.example.com")
+
+    wrong = up.urlencode([("csrf", csrf), ("password", "not the password at all")])
+    refused = call(app, "POST", f"/a/clients/{client}/delete", wrong, cookie=raw)
+    assert "Nothing was deleted" in refused.text
+    assert store.client(pconn, client) is not None
+
+    right = up.urlencode([("csrf", csrf), ("password", PASSWORD)])
+    done = call(app, "POST", f"/a/clients/{client}/delete", right, cookie=raw)
+    assert "was deleted" in done.text
+    assert store.client(pconn, client) is None
+    assert store.recipients_of(pconn, client) == []
+    assert any(row["action"] == "client.delete" for row in store.recent_audit(pconn))
