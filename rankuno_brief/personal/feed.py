@@ -25,7 +25,8 @@ from ..security.content import gate_for
 from ..security.dns import DnsResolver
 from ..security.recipients import check_recipients
 from . import mail, matching, store
-from .profiles import industry_terms
+from . import profiles
+from .profiles import custom_keywords, industry_terms
 from .settings import PersonalSettings, cached_settings, personal_sending_enabled, public_base_url
 
 log = logging.getLogger(__name__)
@@ -93,7 +94,7 @@ def build_one(conn: sqlite3.Connection, settings: PersonalSettings, pool: list[d
     terms = matching.Terms(
         names=(client["client_name"], *_json(client["aliases_json"])),
         competitors=tuple(entry["name"] for entry in _json(client["competitors_json"])),
-        keywords=tuple(_json(client["keywords_json"])),
+        keywords=tuple(_json(client["keywords_json"])) + custom_keywords(client_industries(client)),
         excludes=tuple(_json(client["excludes_json"])),
         industry=industry_terms(client_industries(client), settings),
     )
@@ -199,8 +200,7 @@ def _source_label(cfg: Config, item: dict) -> str:
 
 
 def _industry_title(settings: PersonalSettings, industry_id: str) -> str:
-    industry = settings.industry(industry_id)
-    return industry.title if industry else industry_id
+    return profiles.industry_title(industry_id, settings)
 
 
 # Run ------------------------------------------------------------------------------------------

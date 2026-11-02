@@ -680,3 +680,48 @@ def test_password_login_is_gone(web_db):
     app = web.PersonalWeb(cfg, "https://brief.example.com")
     assert not web.is_personal_path("/login")
     assert not hasattr(app, "admin_token")
+
+
+# Custom operating industry ------------------------------------------------------------------------
+
+
+def test_a_typed_industry_is_accepted_on_its_own(settings):
+    data, errors, _ = profiles.parse_form(
+        fields(client_name="Acme", custom_industry="Logistics & 3PL"), settings, is_new=True
+    )
+    assert not errors
+    assert data["industries"] == ["custom:Logistics & 3PL"]
+    assert data["competitors"] == [] and data["keywords"] == []  # nothing invented for a custom industry
+
+
+def test_a_custom_industry_is_a_strong_keyword_of_its_own_name(settings):
+    assert profiles.industry_terms(["custom:Logistics & 3PL"], settings) == ()
+    assert profiles.custom_keywords(["custom:Logistics & 3PL", "bfsi"]) == ("Logistics & 3PL",)
+    terms = matching.Terms(names=("Acme",), competitors=(), keywords=("Logistics & 3PL",), excludes=(), industry=())
+    assert matching.score_item(item("Logistics & 3PL firms expand into Europe"), terms, min_score=1.5) is not None
+
+
+def test_industry_is_still_required_with_custom_box_empty(settings):
+    _, errors, _ = profiles.parse_form(fields(client_name="Acme"), settings, is_new=True)
+    assert any("industry" in error.lower() for error in errors)
+
+
+def test_custom_industry_must_be_a_sensible_length(settings):
+    _, errors, _ = profiles.parse_form(fields(client_name="Acme", custom_industry="x"), settings, is_new=True)
+    assert any("custom industry" in error for error in errors)
+
+
+def test_custom_industry_title_and_known_industries_still_resolve(settings):
+    assert profiles.industry_title("custom:Logistics", settings) == "Logistics"
+    assert profiles.industry_title("bfsi", settings) == settings.industry("bfsi").title
+
+
+def test_form_shows_the_custom_box_with_the_saved_value(web_db):
+    cfg, pconn = web_db
+    app = web.PersonalWeb(cfg, "https://brief.example.com")
+    person = store.add_person(pconn, "lead@rankuno.com", "Lead", "manager", REAL)
+    raw, _ = store.create_session(pconn, person, REAL, 14)
+    client = store.create_client(pconn, person, data_for("Acme") | {"industries": ["custom:Logistics & 3PL"]}, REAL)
+    page = call(app, "GET", f"/p/clients/{client}", cookie=raw)
+    assert page.status == 200
+    assert 'name="custom_industry" value="Logistics &amp; 3PL"' in page.text

@@ -23,7 +23,9 @@ import json
 import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from http.cookies import SimpleCookie
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from .. import db
@@ -43,6 +45,61 @@ CSP = (
     "frame-ancestors 'none'; base-uri 'none'"
 )
 PREVIEW_CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'"
+
+STYLE = """
+body { font-family: Arial, Helvetica, sans-serif; color: #262626; background: #F2F2F2; margin: 0; font-size: 14px; line-height: 21px; }
+.wrap { max-width: 920px; margin: 0 auto; padding: 0 24px; box-sizing: border-box; }
+.masthead { background: #DF212A; color: #FFFFFF; padding: 16px 0; }
+.masthead .wrap { display: flex; align-items: center; gap: 18px; }
+.masthead img { display: block; }
+.masthead .product { font-size: 13px; letter-spacing: 1px; text-transform: uppercase; }
+.card { background: #FFFFFF; border: 1px solid #E6E6E6; border-top: 0; margin-bottom: 32px; padding: 26px 28px 20px 28px; box-sizing: border-box; }
+.kicker { color: #DF212A; font-size: 11px; font-weight: bold; letter-spacing: 1.5px; text-transform: uppercase; margin: 0 0 4px 0; }
+h1 { font-size: 22px; font-weight: bold; margin: 0 0 14px 0; }
+h2 { font-size: 12px; font-weight: bold; letter-spacing: 1.2px; text-transform: uppercase; color: #262626; margin: 0 0 12px 0; padding-bottom: 6px; border-bottom: 1px solid #E6E6E6; }
+section { margin-top: 26px; }
+p, td, label, legend { font-size: 14px; line-height: 21px; }
+.hint { color: #707070; font-size: 13px; margin: 0 0 10px 0; }
+.muted { color: #707070; }
+.req { color: #DF212A; }
+.error { color: #A1161D; font-weight: bold; margin: 8px 0; }
+.ok { color: #1B6E2E; font-weight: bold; margin: 8px 0; }
+.notice { background: #FAFAFA; border-left: 4px solid #DF212A; padding: 10px 14px; margin: 14px 0; color: #262626; }
+label { display: block; margin: 0 0 14px 0; font-size: 13px; color: #262626; }
+input[type=text], input:not([type]), input[type=email], input[type=password], input[type=url], textarea, select {
+  display: block; width: 100%; max-width: 100%; box-sizing: border-box; margin-top: 5px; padding: 9px 10px;
+  font-family: Arial, Helvetica, sans-serif; font-size: 14px; color: #262626; background: #FFFFFF; border: 1px solid #BDBDBD; border-radius: 0;
+}
+input:focus, textarea:focus, select:focus { outline: 2px solid #DF212A; outline-offset: -1px; border-color: #DF212A; }
+input[type=checkbox] { width: auto; margin: 0 8px 0 0; vertical-align: middle; }
+label.check { display: flex; align-items: center; margin: 0 0 8px 0; font-size: 14px; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 22px; }
+.options { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 22px; margin-bottom: 14px; }
+.actions { margin-top: 26px; padding-top: 18px; border-top: 1px solid #E6E6E6; }
+button { background: #DF212A; color: #FFFFFF; border: 0; padding: 10px 22px; font-family: Arial, Helvetica, sans-serif; font-size: 13px; font-weight: bold; letter-spacing: 0.5px; text-transform: uppercase; cursor: pointer; }
+button.secondary { background: #262626; font-size: 12px; padding: 7px 12px; text-transform: none; letter-spacing: 0; }
+button.ghost { background: transparent; color: #DF212A; border: 1px solid #DF212A; font-size: 12px; padding: 6px 12px; text-transform: none; letter-spacing: 0; }
+a.button { display: inline-block; background: #DF212A; color: #FFFFFF; padding: 10px 22px; text-decoration: none; font-weight: bold; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; }
+a { color: #DF212A; }
+form.inline { display: inline-block; margin: 0 6px 6px 0; }
+.nav { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; border-bottom: 1px solid #E6E6E6; padding-bottom: 12px; margin-bottom: 18px; font-size: 13px; color: #707070; }
+.nav .links a { margin-left: 12px; font-weight: bold; text-decoration: none; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th { text-align: left; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: #707070; font-weight: bold; border-bottom: 2px solid #262626; padding: 8px 10px 8px 0; }
+td { border-bottom: 1px solid #E6E6E6; padding: 9px 10px 9px 0; vertical-align: top; }
+pre { background: #F7F7F7; border: 1px solid #E6E6E6; padding: 10px; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+.footer { color: #707070; font-size: 11px; border-top: 1px solid #E6E6E6; margin-top: 28px; padding-top: 12px; }
+@media (max-width: 640px) { .grid-2, .options { grid-template-columns: 1fr; } .card { padding: 20px 16px; } }
+"""
+
+
+@lru_cache(maxsize=1)
+def _logo_data_uri(path: str) -> str:
+    file = Path(path)
+    if not file.is_file():
+        return ""
+    return "data:image/png;base64," + base64.b64encode(file.read_bytes()).decode("ascii")
+
 
 ROUTE_PREFIXES = ("/m/", "/p/", "/a/", "/u/")
 ROUTE_EXACT = ("/p", "/a", "/logout")
@@ -222,6 +279,10 @@ Ask an admin to send you a new one.</p>""")
             f'{" checked" if i.id in checked else ""}> {_e(i.title)}</label>'
             for i in industries.values()
         )
+        custom_value = _one(fields, "custom_industry") or next(
+            (item[len(profiles.CUSTOM_PREFIX):] for item in fields.get("industries", []) if item.startswith(profiles.CUSTOM_PREFIX)),
+            "",
+        )
         suggested = json.loads(row["suggested_json"]) if row is not None else (fields.get("_suggested") or [])
         suggested_note = ""
         if suggested and (row is None or row["reviewed_at"] is None):
@@ -243,21 +304,39 @@ Ask an admin to send you a new one.</p>""")
         ) if row is not None else ""
         action_path = "/p/clients" if is_new else f"/p/clients/{row['id']}"
         saved = "" if is_new else f'<p><a href="/p/clients/{row["id"]}/preview" target="_blank">Preview this week\'s feed</a></p>'
-        body = f"""<h2>{'New client' if is_new else _e(_one(fields, 'client_name') or 'Client')}</h2>
+        body = f"""<p class="kicker">Client profile</p>
+<h1>{'New client' if is_new else _e(_one(fields, 'client_name') or 'Client')}</h1>
 {notice_html}{error_html}{approval_note}{suggested_note}
 <form method="post" action="{action_path}" class="stack">
 <input type="hidden" name="csrf" value="{_e(person['csrf'])}">
-<label>Client name <span class="req">*</span><input name="client_name" value="{_e(_one(fields, 'client_name'))}" maxlength="120" required></label>
-<label>Website<input name="website" value="{_e(_one(fields, 'website'))}" placeholder="https://example.com"></label>
-<label>Other names (one per line)<textarea name="aliases" rows="2">{_e(_one(fields, 'aliases'))}</textarea></label>
-<fieldset><legend>Operating industries / lines of business <span class="req">*</span></legend>{ind_boxes}</fieldset>
-<label>Competitors (one per line: Name | website)<textarea name="competitors" rows="5">{_e(_one(fields, 'competitors'))}</textarea></label>
-<label>Keywords to follow (one per line)<textarea name="keywords" rows="4">{_e(_one(fields, 'keywords'))}</textarea></label>
-<label>Words to exclude (one per line)<textarea name="excludes" rows="2">{_e(_one(fields, 'excludes'))}</textarea></label>
-<label>Team members who receive the weekly feed (one per line or separated by commas)
-<textarea name="recipients" rows="4" placeholder="name@rankuno.com">{_e(_one(fields, 'recipients'))}</textarea></label>
-<label class="check"><input type="checkbox" name="activate" value="1"> Activate: send this client's feed every Monday</label>
-<div class="actions"><button name="action" value="save">Save</button></div>
+<section>
+  <h2>1. Client</h2>
+  <div class="grid-2">
+    <label>Client name <span class="req">*</span><input name="client_name" value="{_e(_one(fields, 'client_name'))}" maxlength="120" required></label>
+    <label>Website<input name="website" value="{_e(_one(fields, 'website'))}" placeholder="https://example.com"></label>
+  </div>
+  <label>Other names, one per line<textarea name="aliases" rows="2">{_e(_one(fields, 'aliases'))}</textarea></label>
+</section>
+<section>
+  <h2>2. Operating industries <span class="req">*</span></h2>
+  <p class="hint">Select each line of business that applies, or type one that is not listed.</p>
+  <div class="options">{ind_boxes}</div>
+  <label>Other industry<input name="custom_industry" value="{_e(custom_value)}" maxlength="80" placeholder="e.g. Logistics &amp; 3PL"></label>
+</section>
+<section>
+  <h2>3. Competitors and keywords</h2>
+  <label>Competitors, one per line (Name | website)<textarea name="competitors" rows="5">{_e(_one(fields, 'competitors'))}</textarea></label>
+  <div class="grid-2">
+    <label>Keywords to follow, one per line<textarea name="keywords" rows="4">{_e(_one(fields, 'keywords'))}</textarea></label>
+    <label>Words to exclude, one per line<textarea name="excludes" rows="4">{_e(_one(fields, 'excludes'))}</textarea></label>
+  </div>
+</section>
+<section>
+  <h2>4. Weekly feed recipients</h2>
+  <label>Team members, one per line or separated by commas<textarea name="recipients" rows="4" placeholder="name@rankuno.com">{_e(_one(fields, 'recipients'))}</textarea></label>
+  <label class="check"><input type="checkbox" name="activate" value="1"> Activate: send this client's feed every Monday</label>
+</section>
+<div class="actions"><button name="action" value="save">Save client</button></div>
 </form>
 {saved}
 {_recipients_table(recipients_html) if row is not None else ''}"""
@@ -539,34 +618,22 @@ Today's run: {_e(run['status']) if run else 'not run yet'}.</p>
         nav = ""
         if person is not None:
             csrf = _e(person["csrf"])
-            nav = (f'<p class="muted">Signed in as {_e(person["email"])} · <a href="/p/">My clients</a>'
-                   + (' · <a href="/a/">Admin</a>' if person["role"] == "admin" else "")
-                   + f'<form method="post" action="/logout" class="inline"><input type="hidden" name="csrf" value="{csrf}">'
-                   '<button class="secondary">Sign out</button></form></p>')
+            links = '<a href="/p/">My clients</a>' + (' <a href="/a/">Admin</a>' if person["role"] == "admin" else "")
+            nav = (f'<div class="nav"><span>Signed in as {_e(person["email"])}</span>'
+                   f'<span class="links">{links}</span>'
+                   f'<form method="post" action="/logout" class="inline"><input type="hidden" name="csrf" value="{csrf}">'
+                   '<button class="ghost">Sign out</button></form></div>')
+        logo = _logo_data_uri(str(mail.logo_inline(self.cfg)["logo_white"]))
+        logo_html = f'<img src="{logo}" alt="RankUno" height="34">' if logo else ""
         document = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{_e(title)} · Client feeds</title>
-<style>
-  body {{ font-family: Arial, Helvetica, sans-serif; color: #262626; background: #F2F2F2; margin: 0; padding: 24px 16px; }}
-  main {{ max-width: 960px; margin: 0 auto; background: #fff; border-top: 5px solid #DF212A; padding: 24px 28px; }}
-  h1 {{ font-size: 22px; margin: 0 0 4px; }} h2 {{ font-size: 16px; margin: 22px 0 8px; }}
-  p, td, label, legend {{ font-size: 14px; line-height: 21px; }} .muted {{ color: #707070; }}
-  .error {{ color: #A1161D; font-weight: bold; }} .ok {{ color: #1B6E2E; font-weight: bold; }}
-  .notice {{ background: #FFF4F4; border-left: 4px solid #DF212A; padding: 10px 12px; margin: 12px 0; }}
-  .stack label {{ display: block; margin: 12px 0; }} .stack input, .stack textarea, .stack select {{ display: block; width: 100%; box-sizing: border-box; padding: 8px; margin-top: 4px; font-size: 14px; border: 1px solid #BDBDBD; }}
-  .check {{ display: block !important; font-weight: normal; }} .check input {{ width: auto !important; display: inline !important; }}
-  fieldset {{ border: 1px solid #E6E6E6; margin: 14px 0; padding: 10px 12px; }}
-  button {{ background: #DF212A; color: #fff; border: 0; padding: 10px 16px; font-size: 14px; font-weight: bold; cursor: pointer; }}
-  button.secondary {{ background: #262626; padding: 6px 10px; font-size: 13px; }}
-  .button {{ background: #DF212A; color: #fff; padding: 10px 16px; text-decoration: none; font-weight: bold; }}
-  form.inline {{ display: inline-block; margin: 0 6px 6px 0; }} .req {{ color: #DF212A; }}
-  table {{ border-collapse: collapse; width: 100%; }} td {{ border-bottom: 1px solid #E6E6E6; padding: 6px 8px 6px 0; vertical-align: top; }}
-  pre {{ background: #F7F7F7; padding: 10px; font-size: 12px; white-space: pre-wrap; word-break: break-all; }}
-  a {{ color: #DF212A; }}
-</style></head><body><main>
-<h1>The RankUno Brief · Client feeds</h1>
+<style>{STYLE}</style></head><body>
+<header class="masthead"><div class="wrap">{logo_html}<div class="product">The RankUno Brief · Client feeds</div></div></header>
+<main class="wrap card">
 {nav}
 {body}
+<p class="footer">Prepared for internal circulation within RankUno. Client feeds are separate from the general brief.</p>
 </main></body></html>"""
         payload = document.encode("utf-8")
         handler.send_response(status)
@@ -643,6 +710,8 @@ def _row_fields(row: sqlite3.Row) -> dict:
         "keywords": ["\n".join(json.loads(row["keywords_json"]))],
         "excludes": ["\n".join(json.loads(row["excludes_json"]))],
         "recipients": [""],
+        "custom_industry": [next((i[len(profiles.CUSTOM_PREFIX):] for i in json.loads(row["industries_json"])
+                                  if i.startswith(profiles.CUSTOM_PREFIX)), "")],
         "_suggested": json.loads(row["suggested_json"]),
     }
 

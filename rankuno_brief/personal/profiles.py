@@ -20,6 +20,8 @@ MAX_KEYWORDS = 30
 MAX_EXCLUDES = 20
 MAX_RECIPIENTS = 50
 MAX_LINE = 200
+MAX_CUSTOM_INDUSTRY = 80
+CUSTOM_PREFIX = "custom:"  # a manager's own industry: the text after the prefix is its name and its keyword
 
 COMPETITORS_FIELD = "competitors"
 KEYWORDS_FIELD = "keywords"
@@ -82,8 +84,14 @@ def parse_form(
         errors.append("The website must look like https://example.com.")
 
     industries = [item for item in fields.get("industries", []) if item in settings.industries]
+    custom = " ".join(one("custom_industry").split())
+    if custom:
+        if len(custom) < 2 or len(custom) > MAX_CUSTOM_INDUSTRY:
+            errors.append(f"A custom industry must be 2 to {MAX_CUSTOM_INDUSTRY} characters.")
+        elif CUSTOM_PREFIX + custom not in industries:
+            industries.append(CUSTOM_PREFIX + custom)
     if not industries:
-        errors.append("Choose at least one operating industry (line of business).")
+        errors.append("Choose at least one operating industry, or type one in the box.")
 
     aliases = _lines(one("aliases"))[:MAX_ALIASES]
     competitors = parse_competitors(_lines(one("competitors")))
@@ -124,15 +132,40 @@ def parse_form(
 def _industry_values(industries: list[str], settings: PersonalSettings, attribute: str) -> list[str]:
     seen: list[str] = []
     for industry_id in industries:
+        if industry_id.startswith(CUSTOM_PREFIX):
+            continue  # a custom industry has no suggestions
         for value in getattr(settings.industry(industry_id), attribute):
             if value.lower() not in {item.lower() for item in seen}:
                 seen.append(value)
     return seen
 
 
+def industry_title(industry_id: str, settings: PersonalSettings) -> str:
+    if industry_id.startswith(CUSTOM_PREFIX):
+        return industry_id[len(CUSTOM_PREFIX):]
+    industry = settings.industry(industry_id)
+    return industry.title if industry else industry_id
+
+
+def industry_keywords(industry_id: str, settings: PersonalSettings) -> tuple[str, ...]:
+    if industry_id.startswith(CUSTOM_PREFIX):
+        return (industry_id[len(CUSTOM_PREFIX):],)
+    industry = settings.industry(industry_id)
+    return tuple(industry.keywords) if industry else ()
+
+
 def industry_terms(industries: list[str], settings: PersonalSettings) -> tuple[str, ...]:
-    """The keywords that make a story part of these industries (used for generic industry matching)."""
-    return tuple(dict.fromkeys(term for industry_id in industries for term in settings.industry(industry_id).keywords))
+    """Keywords of the chosen config industries (generic industry matching). Custom industries are not included:
+    their names are strong keywords of the client instead, see custom_keywords."""
+    return tuple(dict.fromkeys(
+        term for industry_id in industries if not industry_id.startswith(CUSTOM_PREFIX)
+        for term in industry_keywords(industry_id, settings)
+    ))
+
+
+def custom_keywords(industries: list[str]) -> tuple[str, ...]:
+    """The names a manager typed for their own industries."""
+    return tuple(i[len(CUSTOM_PREFIX):] for i in industries if i.startswith(CUSTOM_PREFIX))
 
 
 def parse_addresses(text: str) -> tuple[list[str], list[tuple[str, str]]]:
