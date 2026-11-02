@@ -24,6 +24,8 @@ class StoryLine:
     published: datetime
     excerpt: str
     reasons: tuple[str, ...]
+    badge: str = "editorial"  # editorial | sponsored | vendor
+    strategic: bool = True  # a direct client or competitor match, rather than industry context
 
 
 @dataclass(frozen=True)
@@ -74,6 +76,13 @@ def _plural(count: int, word: str) -> str:
     return f"{count} {'stories' if word == 'story' else word + 's'}"
 
 
+BADGES = {
+    "editorial": ("Editorial", "#262626"),
+    "sponsored": ("Sponsored", "#8A6D00"),
+    "vendor": ("Vendor report", "#1F4E79"),
+}
+
+
 def weekly_email(cfg: Config, run_day: datetime, sections: list[ClientSection]) -> tuple[str, str]:
     """Returns (html, text). Logo: the white logo, embedded as cid:logo_white."""
     total = sum(len(section.stories) for section in sections)
@@ -82,10 +91,9 @@ def weekly_email(cfg: Config, run_day: datetime, sections: list[ClientSection]) 
     intro_text = (
         f"This edition covers {_plural(len(sections), 'client')} and {_plural(total, 'story')}, "
         f"published in the seven days to {week}. Each story is checked for relevance to the client's "
-        "industry, competitors and keywords."
+        "industry, competitors and keywords. Sponsored and vendor pieces are labelled."
     )
 
-    # Introduction: one line per client.
     overview = "".join(
         f"""<tr><td style="padding:9px 0;border-bottom:1px solid #E6E6E6;font-family:{FONT};font-size:14px;color:{CHARCOAL};">{_e(section.client_name)}</td>
 <td align="right" style="padding:9px 0;border-bottom:1px solid #E6E6E6;font-family:{FONT};font-size:13px;color:{GREY};">{_plural(len(section.stories), 'story').replace(' ', '&nbsp;')}</td></tr>"""
@@ -96,18 +104,14 @@ def weekly_email(cfg: Config, run_day: datetime, sections: list[ClientSection]) 
   <p style="margin:8px 0 14px 0;font-size:14px;line-height:22px;color:{CHARCOAL};">{_e(intro_text)}</p>
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0">{overview}</table>
 </td></tr>"""]
-    text_parts = [
-        PERSONAL_NAME, f"Week of {week}", "",
-        "IN THIS EDITION", intro_text, "",
-    ]
+    text_parts = [PERSONAL_NAME, f"Week of {week}", "", "IN THIS EDITION", intro_text, ""]
     text_parts += [f"  {section.client_name}: {_plural(len(section.stories), 'story')}" for section in sections] + [""]
 
     for section in sections:
         themes = _themes(section.stories)
-        industries = " · ".join(section.industries)
         theme_line = " · ".join(themes) if themes else "none this week"
         blocks.append(f"""<tr><td style="padding:26px 32px 4px 32px;border-top:2px solid {CHARCOAL};font-family:{FONT};">
-  <div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:{RED};font-weight:bold;">{_e(industries)}</div>
+  <div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:{RED};font-weight:bold;">{_e(' · '.join(section.industries))}</div>
   <div style="font-size:20px;font-weight:bold;color:{CHARCOAL};margin-top:4px;">{_e(section.client_name)}</div>
   <div style="font-size:13px;color:{GREY};margin-top:6px;">Key themes: {_e(theme_line)}</div>
 </td></tr>""")
@@ -117,21 +121,36 @@ def weekly_email(cfg: Config, run_day: datetime, sections: list[ClientSection]) 
         if not section.stories:
             blocks.append(f'<tr><td style="padding:14px 32px;font-family:{FONT};font-size:14px;color:{GREY};">No matching developments this week.</td></tr>')
             text_parts += ["No matching developments this week.", ""]
-        for story in section.stories:
-            summary = _summary(story.excerpt)
-            summary_html = (f'<div style="font-size:14px;line-height:22px;color:{CHARCOAL};">{_e(summary)}</div>' if summary else "")
-            relevance = " · ".join(story.reasons[:4])
-            blocks.append(f"""<tr><td style="padding:16px 32px;border-top:1px solid #E6E6E6;font-family:{FONT};">
-  <div style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:{GREY};">{_e(story.source)} &nbsp;·&nbsp; {_date(story.published, cfg)}</div>
+
+        groups = (
+            ("Strategic client & market moves", [story for story in section.stories if story.strategic]),
+            ("Industry & vendor intelligence", [story for story in section.stories if not story.strategic]),
+        )
+        for group_title, stories in groups:
+            if not stories:
+                continue
+            blocks.append(f"""<tr><td style="padding:16px 32px 2px 32px;font-family:{FONT};font-size:11px;letter-spacing:1.2px;text-transform:uppercase;color:{CHARCOAL};font-weight:bold;">{_e(group_title)}</td></tr>""")
+            text_parts += [group_title.upper(), ""]
+            for story in stories:
+                label, color = BADGES.get(story.badge, BADGES["editorial"])
+                summary = _summary(story.excerpt)
+                relevance = " · ".join(story.reasons[:4]) or "general industry news"
+                why = (f"Why it matters to {section.client_name}: direct match on {relevance}." if story.strategic
+                       else f"Industry context: {relevance}.")
+                badge_html = (f'<span style="display:inline-block;font-size:10px;letter-spacing:1px;text-transform:uppercase;'
+                              f'color:#FFFFFF;background:{color};padding:2px 7px;margin-right:8px;">{_e(label)}</span>')
+                summary_html = (f'<div style="font-size:14px;line-height:22px;color:{CHARCOAL};">{_e(summary)}</div>' if summary else "")
+                blocks.append(f"""<tr><td style="padding:16px 32px;border-top:1px solid #E6E6E6;font-family:{FONT};">
+  <div style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:{GREY};">{badge_html}{_e(story.source)} &nbsp;·&nbsp; {_date(story.published, cfg)}</div>
   <a href="{_e(story.url)}" style="display:block;font-size:17px;line-height:23px;font-weight:bold;color:{CHARCOAL};text-decoration:none;margin:6px 0 8px 0;">{_e(story.title)}</a>
   {summary_html}
-  <div style="font-size:12px;line-height:18px;color:{GREY};margin-top:10px;">Relevance: <span style="color:{RED};font-weight:bold;">{_e(relevance) if relevance else 'general industry news'}</span></div>
+  <div style="font-size:12px;line-height:18px;color:{GREY};margin-top:10px;">{_e(why)}</div>
   <div style="margin-top:8px;"><a href="{_e(story.url)}" style="font-size:13px;color:{RED};font-weight:bold;text-decoration:none;">Read the full article &rarr;</a></div>
 </td></tr>""")
-            text_parts += [
-                story.title, f"{story.source} · {_date(story.published, cfg)}", *([summary] if summary else []),
-                f"Relevance: {relevance or 'general industry news'}", f"Read the full article: {story.url}", "",
-            ]
+                text_parts += [
+                    f"[{label.upper()}] {story.title}", f"{story.source} · {_date(story.published, cfg)}",
+                    *([summary] if summary else []), why, f"Read the full article: {story.url}", "",
+                ]
         footer_links = ""
         if section.unsubscribe_url:
             footer_links = (f'<a href="{_e(section.unsubscribe_url)}" style="color:{GREY};text-decoration:underline;">'

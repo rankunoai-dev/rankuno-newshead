@@ -1,14 +1,21 @@
 """Choosing each client's stories from the news already fetched. Pure functions: no database, no network.
 
-Scoring (a term found in the headline counts more than one found only in the summary):
-    client name or alias     5   (summary 2)
-    competitor               4   (summary 1.5)
-    include keyword          3   (summary 1)
-    industry keyword         1.5 (summary 0.5); counts only toward the generic-industry rule below
+Terms are tiered, and a headline counts more than a summary (summary weights are 40% of the headline's):
+    client name or alias, competitor   5    the strongest signal
+    core keyword                       4    strategic topics, e.g. "strategic sourcing", "direct sourcing"
+    operational keyword                2    operating topics, e.g. "yard management", "freight visibility"
+    broad keyword                      1    context words, e.g. "supply chain", "spend management";
+                                            they count only when at least two broad words match, and the
+                                            headline has one of them
 
-A story is kept when it has a client, competitor or keyword hit, or when at least two industry keywords match
-(generic industry news). Any exclude keyword drops it. Short names (4 characters or fewer, e.g. "GEP") only count
-when the headline has them or an industry keyword appears too, so an unrelated use of the word does not match.
+A story is kept when it has a name, competitor, core or operational hit, or two broad hits; and its score reaches
+the minimum. Any exclude keyword drops it.
+
+Executive appointments ("appoints", "names", "hires", "steps down", ...) are kept only when the headline names the
+client or a competitor, so an unrelated company's new chief officer does not reach a client's feed.
+
+Each story is labelled with its content type, from the URL and wording: "editorial", "sponsored" or "vendor".
+Short names (4 characters or fewer, e.g. "GEP") count in the headline, or in the summary only with broad context.
 """
 
 from __future__ import annotations
@@ -20,18 +27,35 @@ from datetime import datetime
 from functools import lru_cache
 
 SHORT_NAME = 4
-TITLE_WEIGHTS = {"name": 5.0, "competitor": 4.0, "keyword": 3.0, "industry": 1.5}
-BODY_WEIGHTS = {"name": 2.0, "competitor": 1.5, "keyword": 1.0, "industry": 0.5}
-GENERIC_INDUSTRY_HITS = 2
+TIER_WEIGHTS = {"name": 5.0, "competitor": 5.0, "core": 4.0, "operational": 2.0, "broad": 1.0}
+TITLE_FACTOR = 1.0
+BODY_FACTOR = 0.4
+GENERIC_BROAD_HITS = 2
+STRATEGIC_TIERS = ("name", "competitor", "core")
+
+APPOINTMENT = re.compile(
+    r"\b(appoints?|appointed|appointing|names?|named|hires?|hired|steps? down|joins?|promotes?|promoted)\b", re.IGNORECASE
+)
+SPONSORED = re.compile(
+    r"/spons|/sponsored|sponsored (?:content|by|post|report|feature|article)|paid (?:post|content)|partner (?:content|post)"
+    r"|advertorial",
+    re.IGNORECASE,
+)
+VENDOR = re.compile(
+    r"\b(e-?books?|white ?papers?|webinars?|in this (?:e-?book|report|guide|whitepaper)|vendor report|analyst report"
+    r"|free download|download (?:the|our) (?:report|guide))\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
 class Terms:
     names: tuple[str, ...]  # client name and aliases
     competitors: tuple[str, ...]
-    keywords: tuple[str, ...]
+    core: tuple[str, ...]
+    operational: tuple[str, ...]
+    broad: tuple[str, ...]  # broad keywords and the chosen industries' keywords
     excludes: tuple[str, ...]
-    industry: tuple[str, ...]  # keywords of the chosen industries
 
 
 @dataclass(frozen=True)
@@ -39,9 +63,11 @@ class Match:
     item_id: int
     score: float
     reasons: tuple[str, ...]
+    strategic: bool  # a client, competitor or core hit (not only operational or broad context)
+    content_type: str  # editorial | sponsored | vendor
 
 
-@lru_cache(maxsize=256)
+@lru_cache(maxsize=512)
 def _pattern(term: str) -> re.Pattern[str]:
     return re.compile(r"(?<!\w)" + re.escape(term) + r"(?!\w)", re.IGNORECASE)
 
@@ -50,47 +76,71 @@ def _hits(terms: Iterable[str], text: str) -> list[str]:
     return [term for term in terms if term and _pattern(term).search(text)]
 
 
+def content_type(item: Mapping) -> str:
+    """Sponsored and vendor pieces are labelled, so the team can tell them from independent journalism."""
+    url = item["url"] or ""
+    title = item["title"] or ""
+    excerpt = item["excerpt"] or ""
+    if SPONSORED.search(f"{url} {title} {excerpt}"):
+        return "sponsored"
+    if VENDOR.search(f"{title} {excerpt}"):
+        return "vendor"
+    return "editorial"
+
+
 def score_item(item: Mapping, terms: Terms, min_score: float) -> Match | None:
     title = item["title"] or ""
     body = " ".join(part for part in (item["excerpt"] or "", item["publisher"] or "") if part)
     if _hits(terms.excludes, title) or _hits(terms.excludes, body):
         return None
 
-    # Each category: (terms hit in headline, terms hit in summary only)
+    # An executive move is kept only when the headline names the client or a competitor.
+    if APPOINTMENT.search(title) and not (_hits(terms.names, title) or _hits(terms.competitors, title)):
+        return None
+
+    groups = {
+        "name": terms.names, "competitor": terms.competitors, "core": terms.core,
+        "operational": terms.operational, "broad": terms.broad,
+    }
+    # tier -> (terms hit in the headline, terms hit in the summary only)
     found: dict[str, tuple[list[str], list[str]]] = {}
-    for category, group in (
-        ("name", terms.names), ("competitor", terms.competitors), ("keyword", terms.keywords), ("industry", terms.industry),
-    ):
+    for tier, group in groups.items():
         in_title = _hits(group, title)
         in_body = [term for term in _hits(group, body) if term not in in_title]
-        found[category] = (in_title, in_body)
+        found[tier] = (in_title, in_body)
 
-    industry_count = len(set(found["industry"][0]) | set(found["industry"][1]))
-    # A short name ("GEP") counts in the headline, or in the summary only alongside industry context.
+    broad_count = len({term.lower() for pair in (found["broad"][0], found["broad"][1]) for term in pair})
+    # A short name ("GEP") counts in the headline, or in the summary only alongside broad context.
     names_title, names_body = found["name"]
-    names_body = [term for term in names_body if len(term) > SHORT_NAME or industry_count > 0]
-    found["name"] = (names_title, names_body)
+    found["name"] = (names_title, [term for term in names_body if len(term) > SHORT_NAME or broad_count > 0])
 
-    strong = any(found[category][0] or found[category][1] for category in ("name", "competitor", "keyword"))
-    generic = industry_count >= GENERIC_INDUSTRY_HITS
-    if not (strong or generic):
+    strategic = any(found[tier][0] or found[tier][1] for tier in STRATEGIC_TIERS)
+    operational = bool(found["operational"][0] or found["operational"][1])
+    generic = broad_count >= GENERIC_BROAD_HITS
+    if not (strategic or operational or generic):
         return None
 
     score = 0.0
     reasons: list[str] = []
-    for category in ("name", "competitor", "keyword", "industry"):
-        in_title, in_body = found[category]
-        if category == "industry" and not generic:
-            continue  # industry hits alone are not enough, and they do not add to a strong match either
+    for tier in ("name", "competitor", "core", "operational", "broad"):
+        if tier == "broad" and not generic:
+            continue  # one broad word is not enough, and broad words add nothing to a story that has no other reason
+        in_title, in_body = found[tier]
         for term in in_title:
-            score += TITLE_WEIGHTS[category]
+            score += TIER_WEIGHTS[tier] * TITLE_FACTOR
             reasons.append(term)
         for term in in_body:
-            score += BODY_WEIGHTS[category]
+            score += TIER_WEIGHTS[tier] * BODY_FACTOR
             reasons.append(term)
     if score < min_score:
         return None
-    return Match(item_id=item["id"], score=round(score, 2), reasons=tuple(dict.fromkeys(reasons)))
+    return Match(
+        item_id=item["id"],
+        score=round(score, 2),
+        reasons=tuple(dict.fromkeys(reasons)),
+        strategic=strategic,
+        content_type=content_type(item),
+    )
 
 
 def rank(

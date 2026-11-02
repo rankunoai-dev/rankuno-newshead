@@ -38,6 +38,9 @@ class PersonalSettings:
     run_time: time
     session_days: int
     invite_days: int
+    core_terms: tuple[str, ...] = ()
+    operational_terms: tuple[str, ...] = ()
+    broad_terms: tuple[str, ...] = ()
 
     def industry(self, industry_id: str) -> Industry | None:
         return self.industries.get(industry_id)
@@ -78,6 +81,9 @@ def load_settings(root: Path) -> PersonalSettings:
         run_time=time(hour, minute),
         session_days=int(feed.get("session_days", 14)),
         invite_days=int(feed.get("invite_days", 7)),
+        core_terms=tuple(str(term) for term in raw.get("core_terms") or ()),
+        operational_terms=tuple(str(term) for term in raw.get("operational_terms") or ()),
+        broad_terms=tuple(str(term) for term in raw.get("broad_terms") or ()),
     )
 
 

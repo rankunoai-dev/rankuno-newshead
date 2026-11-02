@@ -101,18 +101,57 @@ def build_feeds(
     return feeds
 
 
+def tiered_keywords(client_keywords, industries, settings) -> tuple[tuple, tuple, tuple]:
+    """(core, operational, broad) keywords for one client. Core wins over operational, and operational over broad."""
+    operational_list = {term.lower() for term in settings.operational_terms}
+    broad_list = {term.lower() for term in settings.broad_terms}
+    core: dict[str, str] = {}
+    operational: dict[str, str] = {}
+    broad: dict[str, str] = {}
+
+    def add(bucket: dict[str, str], value: str) -> None:
+        bucket.setdefault(value.lower(), value)
+
+    for keyword in client_keywords:
+        key = keyword.lower()
+        if key in operational_list:
+            add(operational, keyword)
+        elif key in broad_list:
+            add(broad, keyword)
+        else:
+            add(core, keyword)
+    for keyword in settings.core_terms:
+        add(core, keyword)
+    for keyword in settings.operational_terms:
+        add(operational, keyword)
+    for keyword in [*settings.broad_terms, *industry_terms(industries, settings)]:
+        add(broad, keyword)
+    for key in list(operational):
+        if key in core:
+            del operational[key]
+    for key in list(broad):
+        if key in core or key in operational:
+            del broad[key]
+    return tuple(core.values()), tuple(operational.values()), tuple(broad.values())
+
+
 def build_one(conn: sqlite3.Connection, settings: PersonalSettings, pool: list[dict], client: sqlite3.Row,
               now: datetime, *, dedupe: bool) -> Feed:
     """One client's feed from the screened news pool. `dedupe` skips stories this client already received."""
     earliest = now - timedelta(days=settings.window_days)
     activated = db.from_iso(client["activated_at"]) if client["activated_at"] else earliest
     window_start = max(earliest, activated)
+    core, operational, broad = tiered_keywords(
+        tuple(_json(client["keywords_json"])) + custom_keywords(client_industries(client)),
+        client_industries(client), settings,
+    )
     terms = matching.Terms(
         names=(client["client_name"], *_json(client["aliases_json"])),
         competitors=tuple(entry["name"] for entry in _json(client["competitors_json"])),
-        keywords=tuple(_json(client["keywords_json"])) + custom_keywords(client_industries(client)),
+        core=core,
+        operational=operational,
+        broad=broad,
         excludes=tuple(_json(client["excludes_json"])),
-        industry=industry_terms(client_industries(client), settings),
     )
     candidates = [item for item in pool if db.from_iso(item["published_at"]) >= window_start]
     featured = store.already_featured_item_ids(conn, client["id"]) if dedupe else set()
@@ -194,6 +233,8 @@ def message_for(cfg: Config, settings: PersonalSettings, feeds: list[Feed], *, n
                     published=db.from_iso(item["published_at"]),
                     excerpt=item["excerpt"] or "",
                     reasons=match.reasons,
+                    badge=match.content_type,
+                    strategic=match.strategic,
                 )
             )
         sections.append(

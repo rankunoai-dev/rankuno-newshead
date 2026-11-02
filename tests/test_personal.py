@@ -46,12 +46,12 @@ def source_id(cfg):
 
 def item(title, excerpt="", publisher=None, item_id=1, source="x"):
     return {"id": item_id, "title": title, "excerpt": excerpt, "publisher": publisher, "source_id": source,
-            "published_at": db.to_iso(NOW)}
+            "published_at": db.to_iso(NOW), "url": f"https://news.example.com/{item_id}"}
 
 
 def terms(**overrides):
-    base = dict(names=("GEP",), competitors=("Coupa", "SAP Ariba"), keywords=("sourcing",), excludes=("gene",),
-                industry=("procurement", "supply chain"))
+    base = dict(names=("GEP",), competitors=("Coupa", "SAP Ariba"), core=("strategic sourcing",), operational=(),
+                broad=("procurement", "supply chain"), excludes=("gene",))
     base.update(overrides)
     return matching.Terms(**base)
 
@@ -69,8 +69,8 @@ def test_short_name_alone_in_summary_does_not_match():
     assert matching.score_item(item("Chipmaker posts record quarter", excerpt="GEP appears in a footnote"), terms(), 1.5) is None
 
 
-def test_short_name_in_summary_counts_with_industry_context():
-    assert matching.score_item(item("Buyers rethink spend", excerpt="GEP and procurement teams agree"), terms(), 1.5)
+def test_short_name_in_summary_counts_with_broad_context():
+    assert matching.score_item(item("Buyers rethink spend", excerpt="GEP and procurement and supply chain teams agree"), terms(), 1.5)
 
 
 def test_name_match_respects_word_boundaries():
@@ -776,7 +776,7 @@ def test_a_typed_industry_is_accepted_on_its_own(settings):
 def test_a_custom_industry_is_a_strong_keyword_of_its_own_name(settings):
     assert profiles.industry_terms(["custom:Logistics & 3PL"], settings) == ()
     assert profiles.custom_keywords(["custom:Logistics & 3PL", "bfsi"]) == ("Logistics & 3PL",)
-    terms = matching.Terms(names=("Acme",), competitors=(), keywords=("Logistics & 3PL",), excludes=(), industry=())
+    terms = matching.Terms(names=("Acme",), competitors=(), core=("Logistics & 3PL",), operational=(), broad=(), excludes=())
     assert matching.score_item(item("Logistics & 3PL firms expand into Europe"), terms, min_score=1.5) is not None
 
 
@@ -898,3 +898,59 @@ def test_delete_needs_the_shared_password_and_removes_the_client(monkeypatch, we
     assert store.client(pconn, client) is None
     assert store.recipients_of(pconn, client) == []
     assert any(row["action"] == "client.delete" for row in store.recent_audit(pconn))
+
+
+# Upgrades: tiers, executive moves, content type, layout -----------------------------------------
+
+
+def test_broad_word_alone_in_a_headline_is_not_enough():
+    # "spend management" is a broad word: one of them is not a reason to send a story.
+    assert matching.score_item(item("Travel and spend management platform launches"), terms(broad=("spend management",)), 1.5) is None
+
+
+def test_operational_topic_in_the_headline_is_kept_but_not_strategic():
+    match = matching.score_item(item("Georgia-Pacific automates yard management"),
+                                terms(core=(), operational=("yard management",)), 1.5)
+    assert match is not None and match.strategic is False
+
+
+def test_a_direct_competitor_or_client_makes_a_story_strategic():
+    match = matching.score_item(item("Coupa expands its AI roadmap"), terms(), 1.5)
+    assert match is not None and match.strategic is True
+
+
+def test_executive_move_about_an_unrelated_company_is_dropped():
+    assert matching.score_item(item("Wella appoints chief supply chain officer", excerpt="supply chain and logistics"),
+                               terms(), 1.5) is None
+
+
+def test_executive_move_about_a_client_or_competitor_is_kept():
+    assert matching.score_item(item("GEP appoints a new chief financial officer"), terms(), 1.5) is not None
+    assert matching.score_item(item("Coupa names a new CEO"), terms(), 1.5) is not None
+
+
+def test_content_type_is_detected_from_url_and_wording():
+    base = {"id": 1, "publisher": None, "excerpt": "", "title": "Context changes everything", "published_at": db.to_iso(NOW)}
+    assert matching.content_type({**base, "url": "https://www.supplychaindive.com/spons/context-changes/"}) == "sponsored"
+    assert matching.content_type({**base, "url": "https://x.example/a", "excerpt": "In this eBook, learn more"}) == "vendor"
+    assert matching.content_type({**base, "url": "https://x.example/a", "excerpt": "Kroger changes its plans"}) == "editorial"
+
+
+def test_client_keywords_are_placed_in_the_right_tier(settings):
+    core, operational, broad = feed.tiered_keywords(("spend management", "direct sourcing", "yard management"), (), settings)
+    assert "spend management" in broad and "spend management" not in core
+    assert "direct sourcing" in core
+    assert "yard management" in operational
+
+
+def test_each_client_section_splits_strategic_from_industry_stories(cfg):
+    strategic = mail.StoryLine("Kroger accelerates direct sourcing", "https://a.example/1", "Supply Chain Dive", NOW,
+                               "Kroger is taking more buying in house.", ("direct sourcing",), "editorial", True)
+    industry = mail.StoryLine("Georgia-Pacific automates yard management", "https://a.example/2", "Supply Chain Brain", NOW,
+                              "", ("yard management",), "vendor", False)
+    section = mail.ClientSection("GEP", ("Supply chain",), (strategic, industry), None)
+    html_body, text_body = mail.weekly_email(cfg, NOW, [section])
+    assert "Strategic client &amp; market moves" in html_body
+    assert "Industry &amp; vendor intelligence" in html_body
+    assert "Vendor report" in html_body and "Why it matters to GEP" in html_body
+    assert "[VENDOR REPORT]" in text_body
