@@ -6,6 +6,8 @@ so a link is never shared between people and cannot be used twice.
 
 from __future__ import annotations
 
+from .settings import PERSONAL_NAME
+
 import logging
 import sqlite3
 from collections.abc import Callable, Iterable

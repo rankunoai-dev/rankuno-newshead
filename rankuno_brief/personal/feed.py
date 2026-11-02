@@ -10,6 +10,8 @@ Rules agreed for v1:
 
 from __future__ import annotations
 
+from .settings import PERSONAL_NAME
+
 import logging
 import sqlite3
 import time
@@ -343,7 +345,7 @@ def _message(profile: MailProfile, cfg: Config, subject: str, html_body: str, te
         html_body=html_body,
         text_body=text_body,
         sender=profile.sender,
-        sender_name=profile.sender_name,
+        sender_name=PERSONAL_NAME,
         recipient=recipient,
         inline_images=mail.logo_inline(cfg),
         reply_to=profile.reply_to,

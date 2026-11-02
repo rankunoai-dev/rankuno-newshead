@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .settings import PERSONAL_NAME
+
 import argparse
 import logging
 import sqlite3
@@ -47,7 +49,7 @@ def cmd_personal(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace
                 from . import mail
 
                 subject, html_body, text_body = mail.notice(
-                    cfg, subject=f"{cfg.newsletter.name} · Client Feeds: your sign-in link",
+                    cfg, subject=f"{PERSONAL_NAME}: your sign-in link",
                     heading="Sign in to manage client feeds",
                     paragraphs=["Use the button to sign in. The link works once and expires in "
                                 f"{settings.invite_days} days."],

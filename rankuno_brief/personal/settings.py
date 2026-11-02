@@ -13,6 +13,8 @@ import yaml
 
 from ..config import ConfigError
 
+PERSONAL_NAME = "The Client Brief"  # sender name, subjects and masthead of the client feed emails and pages
+
 _WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 
 

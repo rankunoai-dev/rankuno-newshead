@@ -16,6 +16,8 @@ Every POST from a signed-in page carries a CSRF token and must come from this si
 
 from __future__ import annotations
 
+from .settings import PERSONAL_NAME
+
 import base64
 import hmac
 import html
@@ -722,7 +724,7 @@ Today's run: {_e(run['status']) if run else 'not run yet'}.</p>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{_e(title)} · Client feeds</title>
 <style>{STYLE}</style></head><body>
-<header class="masthead"><div class="wrap">{logo_html}<div class="product">The RankUno Brief · Client feeds</div></div></header>
+<header class="masthead"><div class="wrap">{logo_html}<div class="product">{PERSONAL_NAME}</div></div></header>
 <main class="wrap card">
 {nav}
 {body}

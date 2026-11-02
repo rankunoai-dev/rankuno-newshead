@@ -3,6 +3,8 @@ inline styles (Outlook-safe), a plain-text alternative, and every value escaped.
 
 from __future__ import annotations
 
+from .settings import PERSONAL_NAME
+
 import html
 from dataclasses import dataclass
 from datetime import datetime
@@ -41,13 +43,13 @@ def _date(value: datetime, cfg: Config) -> str:
 
 
 def weekly_subject(cfg: Config, run_day: datetime) -> str:
-    return f"{cfg.newsletter.name} · Client Feed | Week of {run_day.astimezone(cfg.newsletter.timezone):%d %B %Y}"
+    return f"{PERSONAL_NAME} | Week of {run_day.astimezone(cfg.newsletter.timezone):%d %B %Y}"
 
 
 def weekly_email(cfg: Config, run_day: datetime, sections: list[ClientSection]) -> tuple[str, str]:
     """Returns (html, text). Logo: embed cid:logo_white (inline image, sent with the message)."""
     blocks = []
-    text_parts = [f"{cfg.newsletter.name} · Client Feed", f"Week of {_date(run_day, cfg)}", ""]
+    text_parts = [f"{PERSONAL_NAME}", f"Week of {_date(run_day, cfg)}", ""]
     for section in sections:
         blocks.append(
             f"""<tr><td style="padding:22px 28px 6px 28px;font-family:{FONT};">
@@ -78,13 +80,13 @@ def weekly_email(cfg: Config, run_day: datetime, sections: list[ClientSection]) 
         blocks.append(f'<tr><td style="padding:0 28px 16px 28px;font-family:{FONT};font-size:12px;">{footer_links}</td></tr>')
 
     html_body = f"""<!doctype html>
-<html><head><meta charset="utf-8"><title>{_e(cfg.newsletter.name)}</title></head>
+<html><head><meta charset="utf-8"><title>{_e(PERSONAL_NAME)}</title></head>
 <body style="margin:0;padding:0;background:#F2F2F2;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F2F2F2;"><tr><td align="center" style="padding:20px 8px;">
 <table role="presentation" width="640" cellpadding="0" cellspacing="0" style="width:640px;max-width:640px;background:#FFFFFF;border-top:5px solid {RED};">
 <tr><td style="background:{RED};padding:18px 28px;font-family:{FONT};color:#FFFFFF;">
   <img src="cid:logo_white" alt="RankUno" height="32" style="display:block;border:0;" />
-  <div style="font-size:18px;font-weight:bold;margin-top:10px;">{_e(cfg.newsletter.name)} · Client Feed</div>
+  <div style="font-size:18px;font-weight:bold;margin-top:10px;">{_e(PERSONAL_NAME)}</div>
   <div style="font-size:13px;margin-top:2px;">Week of {_e(_date(run_day, cfg))}</div>
 </td></tr>
 {''.join(blocks)}
@@ -99,7 +101,7 @@ def weekly_email(cfg: Config, run_day: datetime, sections: list[ClientSection]) 
 
 
 def invite_subject(cfg: Config) -> str:
-    return f"{cfg.newsletter.name} · Client Feeds: your sign-in link"
+    return f"{PERSONAL_NAME}: your sign-in link"
 
 
 def _masthead(cfg: Config, kicker: str) -> str:
@@ -107,7 +109,7 @@ def _masthead(cfg: Config, kicker: str) -> str:
     return f"""<tr><td style="background:{RED};padding:18px 28px;font-family:{FONT};color:#FFFFFF;">
   <img src="cid:logo_white" alt="RankUno" height="32" style="display:block;border:0;" />
   <div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;margin-top:12px;">{_e(kicker)}</div>
-  <div style="font-size:17px;font-weight:bold;margin-top:2px;">{_e(cfg.newsletter.name)} · Client Feeds</div>
+  <div style="font-size:17px;font-weight:bold;margin-top:2px;">{_e(PERSONAL_NAME)}</div>
 </td></tr>"""
 
 
