@@ -439,6 +439,12 @@ Nothing is marked as sent. {"<strong>A job is running; this page refreshes itsel
 <p>News fetch daily at {esc(cfg.newsletter.fetch_time)}. Next issue: {esc(local(next_slot(now, cfg)))}.
 Production sending is <strong>{"ON" if production_sending_enabled() else "OFF"}</strong>.</p>
 
+<h2>Personalised Client Feeds</h2>
+<p>Weekly client industry news feeds for account managers and client teams (e.g. GEP).
+Sending is <strong>{"ON" if personal_sending_on() else "OFF"}</strong>.</p>
+<p><a class="button" href="/a/" style="color:#fff; text-decoration:none; padding:8px 14px; background:#DF212A; font-weight:bold; display:inline-block;">Open Client Feeds Admin Panel (/a/) &rarr;</a>
+&nbsp; <a href="/p/" style="color:#DF212A; font-weight:bold;">Manager Portal (/p/)</a></p>
+
 <h2>Latest issue</h2><p>{issue_html}</p>
 <h2>Last news fetch</h2><p>{fetch_html}</p>
 

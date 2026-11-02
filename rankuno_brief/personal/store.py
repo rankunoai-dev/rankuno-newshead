@@ -10,7 +10,7 @@ import hashlib
 import json
 import secrets
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .. import db
@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS personal_people (
     name        TEXT NOT NULL DEFAULT '',
     role        TEXT NOT NULL,            -- admin | manager
     active      INTEGER NOT NULL DEFAULT 1,
-    created_at  TEXT NOT NULL
+    created_at  TEXT NOT NULL,
+    approved_at TEXT                      -- managers can activate clients only once approved; admins from the start
 );
 
 CREATE TABLE IF NOT EXISTS personal_invites (
@@ -113,13 +114,56 @@ CREATE TABLE IF NOT EXISTS personal_deliveries (
     error        TEXT,
     PRIMARY KEY (run_id, recipient)
 );
+
+-- A manager asks for approval of their account (one open request at a time).
+CREATE TABLE IF NOT EXISTS personal_requests (
+    id            INTEGER PRIMARY KEY,
+    manager_id    INTEGER NOT NULL REFERENCES personal_people (id),
+    status        TEXT NOT NULL,        -- pending | approved | rejected
+    submitted_at  TEXT NOT NULL,
+    decided_at    TEXT,
+    decided_by    TEXT,
+    reason        TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_personal_requests_status ON personal_requests (status);
+
+-- Who changed what, for the admins.
+CREATE TABLE IF NOT EXISTS personal_audit (
+    id      INTEGER PRIMARY KEY,
+    at      TEXT NOT NULL,
+    actor   TEXT NOT NULL,
+    action  TEXT NOT NULL,
+    target  TEXT NOT NULL,
+    detail  TEXT NOT NULL DEFAULT ''
+);
 """
+
+
+DEFAULT_ADMINS = (
+    ("rajat.singh@rankuno.com", "Rajat Singh"),
+    ("naeem.gari@rankuno.com", "Naeem Gari"),
+    ("prithviraj.pednekar@rankuno.com", "Prithviraj Pednekar"),
+)
 
 
 def connect(db_path: Path | str) -> sqlite3.Connection:
     conn = db.connect(db_path)
     conn.executescript(SCHEMA)
+    seed_default_admins(conn)
     return conn
+
+
+def seed_default_admins(conn: sqlite3.Connection, now: datetime | None = None) -> None:
+    moment = _iso(now or datetime.now(timezone.utc))
+    with conn:
+        for email, name in DEFAULT_ADMINS:
+            conn.execute(
+                """INSERT INTO personal_people (email, name, role, active, created_at, approved_at)
+                   VALUES (?, ?, 'admin', 1, ?, ?)
+                   ON CONFLICT(email) DO UPDATE SET role = 'admin', active = 1,
+                       approved_at = COALESCE(personal_people.approved_at, excluded.approved_at)""",
+                (email, name, moment, moment),
+            )
 
 
 def hash_token(raw: str) -> str:
@@ -438,3 +482,81 @@ def mark_delivery(conn: sqlite3.Connection, run_id: int, recipient: str, status:
                    sent_at = excluded.sent_at, error = excluded.error""",
             (run_id, recipient, status, _iso(at), _iso(at) if status == "sent" else None, error),
         )
+
+
+# Approval requests and the audit log ------------------------------------------------------------
+
+
+def is_approved(person) -> bool:
+    return person["approved_at"] is not None
+
+
+def approve_person(conn: sqlite3.Connection, person_id: int, now: datetime) -> None:
+    with conn:
+        conn.execute("UPDATE personal_people SET approved_at = COALESCE(approved_at, ?) WHERE id = ?", (_iso(now), person_id))
+
+
+def submit_request(conn: sqlite3.Connection, manager_id: int, now: datetime) -> int | None:
+    """Opens an approval request. Returns None when one is already waiting."""
+    if pending_request_for(conn, manager_id) is not None:
+        return None
+    with conn:
+        cursor = conn.execute(
+            "INSERT INTO personal_requests (manager_id, status, submitted_at) VALUES (?, 'pending', ?)",
+            (manager_id, _iso(now)),
+        )
+    return cursor.lastrowid
+
+
+def pending_request_for(conn: sqlite3.Connection, manager_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM personal_requests WHERE manager_id = ? AND status = 'pending'", (manager_id,)
+    ).fetchone()
+
+
+def request_row(conn: sqlite3.Connection, request_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        """SELECT r.*, p.email AS manager_email, p.name AS manager_name FROM personal_requests r
+           JOIN personal_people p ON p.id = r.manager_id WHERE r.id = ?""",
+        (request_id,),
+    ).fetchone()
+
+
+def pending_requests(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        """SELECT r.*, p.email AS manager_email, p.name AS manager_name FROM personal_requests r
+           JOIN personal_people p ON p.id = r.manager_id WHERE r.status = 'pending' ORDER BY r.submitted_at"""
+    ).fetchall()
+
+
+def decide_request(conn: sqlite3.Connection, request_id: int, *, approve: bool, by: str, reason: str,
+                   now: datetime) -> sqlite3.Row | None:
+    """Approve or reject a pending request. The first decision wins: a second one returns None."""
+    row = request_row(conn, request_id)
+    if row is None or row["status"] != "pending":
+        return None
+    status = "approved" if approve else "rejected"
+    with conn:
+        cursor = conn.execute(
+            "UPDATE personal_requests SET status = ?, decided_at = ?, decided_by = ?, reason = ? WHERE id = ? AND status = 'pending'",
+            (status, _iso(now), by, reason, request_id),
+        )
+        if cursor.rowcount != 1:
+            return None
+        if approve:
+            conn.execute(
+                "UPDATE personal_people SET approved_at = COALESCE(approved_at, ?) WHERE id = ?", (_iso(now), row["manager_id"])
+            )
+    return request_row(conn, request_id)
+
+
+def audit(conn: sqlite3.Connection, actor: str, action: str, target: str, detail: str = "", *, now: datetime) -> None:
+    with conn:
+        conn.execute(
+            "INSERT INTO personal_audit (at, actor, action, target, detail) VALUES (?, ?, ?, ?, ?)",
+            (_iso(now), actor, action, target, detail[:500]),
+        )
+
+
+def recent_audit(conn: sqlite3.Connection, limit: int = 40) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM personal_audit ORDER BY id DESC LIMIT ?", (limit,)).fetchall()

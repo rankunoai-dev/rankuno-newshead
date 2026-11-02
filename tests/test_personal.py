@@ -8,7 +8,8 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from rankuno_brief import db
-from rankuno_brief.personal import feed, mail, matching, profiles, store, web
+from rankuno_brief.personal import feed, mail, matching, notify, profiles, store, web
+import urllib.parse as up
 from rankuno_brief.personal.settings import cached_settings
 from fake_dns import FakeDns
 
@@ -419,6 +420,7 @@ def test_sign_in_flow_and_client_form(monkeypatch, web_db):
     monkeypatch.setattr(web, "DnsResolver", lambda *a, **k: dns())
     app = web.PersonalWeb(cfg, "https://brief.example.com")
     person = store.add_person(pconn, "lead@rankuno.com", "Lead", "manager", REAL)
+    store.approve_person(pconn, person, REAL)  # an approved manager can activate clients
     raw = store.create_invite(pconn, person, "admin", datetime.now(timezone.utc), days=7)
 
     shown = call(app, "GET", f"/m/{raw}")
@@ -547,3 +549,134 @@ def test_pages_are_served_by_the_real_http_server(monkeypatch, web_db):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+# Approval, admin decisions and notices ------------------------------------------------------------
+
+
+class Sent:
+    def __init__(self):
+        self.items = []
+
+    def __call__(self, cfg, to, subject, html_body, text_body):
+        self.items.append((to, subject))
+        return True
+
+
+@pytest.fixture
+def mailbox(monkeypatch):
+    sent = Sent()
+    monkeypatch.setattr(notify, "personal_sending_enabled", lambda: True)
+    monkeypatch.setattr(notify, "send", sent)
+    return sent
+
+
+def form_body(csrf, **values):
+    base = {"client_name": "GEP", "industries": "supply_chain_procurement", "recipients": ""}
+    base.update(values)
+    pairs = [("csrf", csrf)]
+    for key, value in base.items():
+        if key == "industries":
+            pairs += [("industries", value)]
+        else:
+            pairs.append((key, value))
+    return up.urlencode(pairs)
+
+
+def test_unapproved_manager_can_draft_but_not_activate(monkeypatch, web_db):
+    cfg, pconn = web_db
+    monkeypatch.setattr(web, "DnsResolver", lambda *a, **k: dns())
+    app = web.PersonalWeb(cfg, "https://brief.example.com")
+    manager = store.add_person(pconn, "new@rankuno.com", "New", "manager", REAL)
+    raw, csrf = store.create_session(pconn, manager, REAL, 14)
+    result = call(app, "POST", "/p/clients", form_body(csrf, activate="1", action="save"), cookie=raw)
+    client = store.clients_of(pconn, manager)[0]
+    assert client["status"] == "draft"
+    assert "waiting for admin approval" in result.text
+
+
+def test_request_is_sent_to_all_default_admins_and_first_decision_wins(monkeypatch, web_db, mailbox):
+    cfg, pconn = web_db
+    monkeypatch.setattr(web, "DnsResolver", lambda *a, **k: dns())
+    app = web.PersonalWeb(cfg, "https://brief.example.com")
+    manager = store.add_person(pconn, "new@rankuno.com", "New", "manager", REAL)
+    store.create_client(pconn, manager, data_for("GEP"), REAL)
+    raw, csrf = store.create_session(pconn, manager, REAL, 14)
+    call(app, "POST", "/p/request", up.urlencode([("csrf", csrf)]), cookie=raw)
+    assert sorted(to for to, _ in mailbox.items) == sorted(
+        ["rajat.singh@rankuno.com", "naeem.gari@rankuno.com", "prithviraj.pednekar@rankuno.com"])
+    # A second submit while waiting does not open another request.
+    call(app, "POST", "/p/request", up.urlencode([("csrf", csrf)]), cookie=raw)
+    assert len(mailbox.items) == 3
+    request_id = store.pending_request_for(pconn, manager)["id"]
+
+    admin = store.person_by_email(pconn, "naeem.gari@rankuno.com")
+    admin_raw, admin_csrf = store.create_session(pconn, admin["id"], REAL, 14)
+    approved = call(app, "POST", f"/a/requests/{request_id}/approve", up.urlencode([("csrf", admin_csrf)]), cookie=admin_raw)
+    assert approved.status == 200 and "Request approved" in approved.text
+    assert store.is_approved(store.person(pconn, manager))
+    # The other admins hear about the decision, and the manager is told.
+    assert any(to == "new@rankuno.com" for to, _ in mailbox.items)
+
+    rajat = store.person_by_email(pconn, "rajat.singh@rankuno.com")
+    rajat_raw, rajat_csrf = store.create_session(pconn, rajat["id"], REAL, 14)
+    again = call(app, "POST", f"/a/requests/{request_id}/approve", up.urlencode([("csrf", rajat_csrf)]), cookie=rajat_raw)
+    assert "already decided" in again.text
+
+
+def test_rejection_needs_a_reason_and_reaches_the_manager(monkeypatch, web_db, mailbox):
+    cfg, pconn = web_db
+    monkeypatch.setattr(web, "DnsResolver", lambda *a, **k: dns())
+    app = web.PersonalWeb(cfg, "https://brief.example.com")
+    manager = store.add_person(pconn, "new@rankuno.com", "New", "manager", REAL)
+    store.create_client(pconn, manager, data_for("GEP"), REAL)
+    store.submit_request(pconn, manager, REAL)
+    request_id = store.pending_request_for(pconn, manager)["id"]
+    admin = store.person_by_email(pconn, "naeem.gari@rankuno.com")
+    raw, csrf = store.create_session(pconn, admin["id"], REAL, 14)
+    no_reason = call(app, "POST", f"/a/requests/{request_id}/reject", up.urlencode([("csrf", csrf), ("reason", " ")]), cookie=raw)
+    assert "Give a reason" in no_reason.text
+    assert store.pending_request_for(pconn, manager) is not None
+    call(app, "POST", f"/a/requests/{request_id}/reject", up.urlencode([("csrf", csrf), ("reason", "Client name is unclear")]), cookie=raw)
+    assert store.request_row(pconn, request_id)["status"] == "rejected"
+    assert not store.is_approved(store.person(pconn, manager))
+    assert any(to == "new@rankuno.com" for to, _ in mailbox.items)
+
+
+def test_admin_edits_a_managers_client_and_the_change_is_audited(monkeypatch, web_db):
+    cfg, pconn = web_db
+    monkeypatch.setattr(web, "DnsResolver", lambda *a, **k: dns())
+    app = web.PersonalWeb(cfg, "https://brief.example.com")
+    manager = store.add_person(pconn, "lead@rankuno.com", "Lead", "manager", REAL)
+    store.approve_person(pconn, manager, REAL)
+    client = store.create_client(pconn, manager, data_for("GEP"), REAL)
+    admin = store.person_by_email(pconn, "rajat.singh@rankuno.com")
+    raw, csrf = store.create_session(pconn, admin["id"], REAL, 14)
+    body = form_body(csrf, client_name="GEP Worldwide", action="save")
+    result = call(app, "POST", f"/p/clients/{client}", body, cookie=raw)
+    assert result.status == 303
+    assert store.client(pconn, client)["client_name"] == "GEP Worldwide"
+    actions = [(row["actor"], row["action"]) for row in store.recent_audit(pconn)]
+    assert ("rajat.singh@rankuno.com", "client.update") in actions
+
+
+def test_manager_edit_of_an_active_client_notifies_the_admins(monkeypatch, web_db, mailbox):
+    cfg, pconn = web_db
+    monkeypatch.setattr(web, "DnsResolver", lambda *a, **k: dns())
+    app = web.PersonalWeb(cfg, "https://brief.example.com")
+    manager = store.add_person(pconn, "lead@rankuno.com", "Lead", "manager", REAL)
+    store.approve_person(pconn, manager, REAL)
+    client = store.create_client(pconn, manager, data_for("GEP"), REAL)
+    store.add_recipients(pconn, client, ["ann@rankuno.com"], REAL)
+    store.set_client_status(pconn, client, "active", REAL)
+    raw, csrf = store.create_session(pconn, manager, REAL, 14)
+    call(app, "POST", f"/p/clients/{client}", form_body(csrf, client_name="GEP Inc", action="save"), cookie=raw)
+    assert sorted(to for to, subject in mailbox.items if subject.startswith("Client changed")) == sorted(
+        ["rajat.singh@rankuno.com", "naeem.gari@rankuno.com", "prithviraj.pednekar@rankuno.com"])
+
+
+def test_password_login_is_gone(web_db):
+    cfg, _ = web_db
+    app = web.PersonalWeb(cfg, "https://brief.example.com")
+    assert not web.is_personal_path("/login")
+    assert not hasattr(app, "admin_token")

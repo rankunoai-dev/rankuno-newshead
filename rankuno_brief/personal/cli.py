@@ -23,11 +23,41 @@ def add_parser(commands) -> None:
     run = sub.add_parser("run", help="build and send this week's client feeds now")
     run.add_argument("--test", action="store_true", help="send a [TEST] copy to TEST_RECIPIENTS only; records nothing")
     sub.add_parser("status", help="show whether the weekly feed is on and what the last run did")
+    sub.add_parser("admin-links", help="email each admin a fresh sign-in link (prints them when sending is off)")
 
 
 def cmd_personal(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace) -> int:
     conn.executescript(store.SCHEMA)
+    store.seed_default_admins(conn)
     now = datetime.now(timezone.utc)
+    if args.personal_command == "admin-links":
+        from . import notify
+        from .settings import public_base_url
+
+        base = public_base_url()
+        if base is None:
+            log.error("Set PERSONAL_BASE_URL first: sign-in links are built from it")
+            return 1
+        settings = cached_settings(cfg.root)
+        if not personal_sending_enabled():
+            print("Email sending is off (PERSONAL_SEND_ENABLED). Sign-in links, shown once:")
+        for admin in notify.admins(conn):
+            link = notify.sign_in_link(conn, settings, base, admin["id"], now)
+            if personal_sending_enabled():
+                from . import mail
+
+                subject, html_body, text_body = mail.notice(
+                    cfg, subject=f"{cfg.newsletter.name} · Client Feeds: your sign-in link",
+                    heading="Sign in to manage client feeds",
+                    paragraphs=["Use the button to sign in. The link works once and expires in "
+                                f"{settings.invite_days} days."],
+                    button=("Sign in", link),
+                )
+                notify.send(cfg, admin["email"], subject, html_body, text_body)
+                print(f"Emailed {admin['email']}")
+            else:
+                print(f"{admin['email']}: {link}")
+        return 0
     if args.personal_command == "add-admin":
         from ..security.dns import DnsResolver
         from ..security.recipients import check_recipients, normalize_address

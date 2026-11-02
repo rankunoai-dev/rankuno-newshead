@@ -281,3 +281,13 @@ sign-in per admin and manager; Monday 10:00 IST.
 - Pilot (step 7): GEP with one manager and a small team, for at least two weeks. Not started: it needs real people and PERSONAL_SEND_ENABLED=true, which only you can switch on.
 
 **Note on activation:** a feed covers news since the client was activated, up to 7 days back. A client activated on Saturday gets Sat–Mon news in its first Monday feed.
+
+## 15. Approval and admin flow (built 2026-11-02, replaces the password login)
+
+- **Default admins**: Rajat Singh, Naeem Gari and Prithviraj Pednekar (`DEFAULT_ADMINS` in `store.py`) are created on every start and cannot be demoted from the web. They sign in by emailed link only: `personal admin-links` emails each a fresh link.
+- **Invite**: an admin invites a manager by email. The manager signs in and drafts clients, but cannot activate them yet.
+- **Approval request**: "Submit for approval" (one open request at a time) emails all three admins a sign-in link to the admin page.
+- **Decision**: any one admin approves or rejects (rejection needs a reason). The first decision wins; the manager is emailed, and the other admins are told. Approval lets the manager activate clients; team emails still wait for the manager to confirm the suggested values.
+- **Admin edits**: admins can edit any client. When a manager changes an active client, all admins are emailed.
+- **Audit log**: every invite, request, decision, client change, activation, reassignment and status change is recorded and shown on the admin page.
+- **Removed**: the `/login` password sign-in and the `ADMIN_TOKEN` back door. `ADMIN_TOKEN` now only switches on the old status page.

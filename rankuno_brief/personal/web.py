@@ -1,34 +1,37 @@
 """Web pages of the personalised feed, mounted in the same server as the admin page.
 
-  /m/<token>                 sign-in from an emailed link (GET shows a button; POST uses the link, once)
-  /logout                    end the session
-  /p/                        a manager's clients
-  /p/clients/new, /p/clients/<id>      the client form (managers: own clients; admins: any)
-  /p/clients/<id>/preview    this week's feed for the client, on screen only (nothing is sent)
-  /a/                        admin: people, invitations, clients
-  /u/<token>                 one-click unsubscribe from one client's feed
+  /m/<token>                              sign-in from an emailed link (GET shows a button; POST uses the link, once)
+  /logout                                 end the session
+  /p/                                     a manager's clients and approval status
+  /p/request                              a manager asks admins to approve their account
+  /p/clients/new, /p/clients/<id>         the client form (managers: own clients; admins: any)
+  /p/clients/<id>/preview                 this week's feed for the client, on screen only (nothing is sent)
+  /a/                                     admin: approval requests, people, clients, audit log
+  /a/requests/<id>/approve|reject         admin decision on a manager's request (the first decision wins)
+  /u/<token>                              one-click unsubscribe from one client's feed
 
-Emailed links point at PERSONAL_BASE_URL. Sign-in uses personal sessions, not ADMIN_TOKEN.
+Sign-in is only by emailed link. Managers are approved by an admin before they can activate clients.
 Every POST from a signed-in page carries a CSRF token and must come from this site.
 """
 
 from __future__ import annotations
 
 import base64
+import hmac
 import html
 import json
 import logging
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from http.cookies import SimpleCookie
 from urllib.parse import parse_qs, urlsplit
 
 from .. import db
 from ..config import Config
-from ..mail_profiles import PRODUCTION, load_profile
 from ..security.dns import DnsResolver
 from ..security.recipients import check_recipients, normalize_address
 from . import feed as feed_runner
-from . import mail, profiles, store
+from . import mail, notify, profiles, store
 from .settings import PersonalSettings, cached_settings, personal_sending_enabled
 
 log = logging.getLogger(__name__)
@@ -42,11 +45,11 @@ CSP = (
 PREVIEW_CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'"
 
 ROUTE_PREFIXES = ("/m/", "/p/", "/a/", "/u/")
+ROUTE_EXACT = ("/p", "/a", "/logout")
 MESSAGES = {
     "saved": "Saved.",
     "activated": "Saved and activated: the next weekly feed includes this client.",
 }
-ROUTE_EXACT = ("/p", "/a", "/logout")
 
 
 def is_personal_path(path: str) -> bool:
@@ -88,9 +91,12 @@ class PersonalWeb:
 
         person = store.session_for(conn, _cookie(handler), now)
         if person is None:
-            return self._page(handler, 401, "Sign in", "<p>Open the sign-in link from your email to continue.</p>")
+            return self._page(handler, 401, "Sign in", "<p>Open the sign-in link from your email to continue. "
+                              "If it has expired, ask an admin for a new one.</p>")
         if path in ("/p", "/p/") and method == "GET":
             return self._my_clients(handler, person, conn)
+        if path == "/p/request" and method == "POST":
+            return self._request_approval(handler, person, form, conn, now)
         if path == "/p/clients/new" and method == "GET":
             return self._form(handler, person, conn, None, {}, [], is_new=True)
         if path == "/p/clients" and method == "POST":
@@ -101,7 +107,7 @@ class PersonalWeb:
             return self._admin_home(handler, person, conn, now)
         if path.startswith("/a/") and method == "POST":
             return self._admin_action(handler, person, path, form, conn, now)
-        return self._page(handler, 404, "Not found", "<p>Not found.</p>")
+        return self._page(handler, 404, "Not found", "<p>Not found.</p>", person=person)
 
     # Sign-in ----------------------------------------------------------------------------------
 
@@ -138,13 +144,51 @@ Ask an admin to send you a new one.</p>""")
 
     # Manager pages ----------------------------------------------------------------------------
 
-    def _my_clients(self, handler, person, conn) -> None:
+    def _my_clients(self, handler, person, conn, notice: str | None = None) -> None:
         rows = store.clients_of(conn, person["id"])
         items = "".join(_client_row(row, conn) for row in rows) or '<tr><td class="muted">No clients yet.</td></tr>'
+        if store.is_approved(person):
+            approval = '<p class="ok">Your account is approved. You can activate clients.</p>'
+        elif store.pending_request_for(conn, person["id"]) is not None:
+            approval = ('<p class="notice">Waiting for an admin to approve your account. You can keep drafting clients; '
+                        "activation opens once you are approved.</p>")
+        else:
+            approval = """<p class="notice">Your clients stay as drafts until an admin approves your account.</p>
+<form method="post" action="/p/request"><input type="hidden" name="csrf" value="{csrf}">
+<button>Submit for approval</button></form>""".replace("{csrf}", _e(person["csrf"]))
+        notice_html = f"<p class='ok'>{_e(notice)}</p>" if notice else ""
         body = f"""<h2>Your clients</h2>
+{notice_html}{approval}
 <p><a class="button" href="/p/clients/new">Add a client</a></p>
 <table>{items}</table>"""
         self._page(handler, 200, "Your clients", body, person=person)
+
+    def _request_approval(self, handler, person, form, conn, now) -> None:
+        if not _csrf_ok(form, person):
+            return self._page(handler, 403, "Refused", "<p>Your session has expired. Reload the page.</p>", person=person)
+        if store.is_approved(person):
+            return self._redirect(handler, "/p/")
+        clients = store.clients_of(conn, person["id"])
+        if not clients:
+            return self._my_clients(handler, person, conn, notice="Add at least one client before you submit for approval.")
+        request_id = store.submit_request(conn, person["id"], now)
+        if request_id is None:
+            return self._my_clients(handler, person, conn, notice="Your request is already waiting for an admin.")
+        names = ", ".join(row["client_name"] for row in clients)
+        store.audit(conn, person["email"], "request.submit", str(request_id), names, now=now)
+
+        def build(link: str, admin) -> tuple[str, str, str]:
+            return mail.notice(
+                self.cfg,
+                subject=f"Approval needed: {person['email']}",
+                heading="A manager is waiting for approval",
+                paragraphs=[f"{person['email']} has set up {len(clients)} client(s): {names}.",
+                            "Review the clients and approve or reject the request. The first decision counts."],
+                button=("Review the request", link),
+            )
+
+        notify.notify_people(conn, self.cfg, self.settings, self.base, now, notify.admins(conn), build)
+        self._my_clients(handler, person, conn, notice="Submitted. The admins have been emailed. You can keep editing drafts.")
 
     def _client_route(self, handler, method, path, person, form, conn, now) -> None:
         parts = path.split("/")  # "", "p", "clients", id, [action]
@@ -162,7 +206,9 @@ Ask an admin to send you a new one.</p>""")
         if method == "POST" and action == "recipients-remove":
             if not _csrf_ok(form, person):
                 return self._page(handler, 403, "Refused", "<p>Your session has expired.</p>", person=person)
-            store.remove_recipient(conn, row["id"], (_field(form, "address") or "").strip().lower())
+            address = (_field(form, "address") or "").strip().lower()
+            store.remove_recipient(conn, row["id"], address)
+            store.audit(conn, person["email"], "team.remove", row["client_name"], address, now=now)
             return self._redirect(handler, f"/p/clients/{row['id']}?msg=saved")
         if method == "POST" and action == "":
             return self._save_client(handler, person, form, conn, now, client_id=row["id"])
@@ -182,9 +228,12 @@ Ask an admin to send you a new one.</p>""")
             suggested_note = f"""<div class="notice">The engine pre-filled some fields from your industries:
 {_e(', '.join(suggested))}. Check them, then tick the confirmation below. Until you confirm, the client is not sent.
 <label class="check"><input type="checkbox" name="reviewed" value="1"> I have reviewed the suggested values</label></div>"""
+        approval_note = "" if store.is_approved(person) else (
+            '<div class="notice">Your account is waiting for admin approval. You can save drafts now; '
+            "activation opens once you are approved.</div>"
+        )
         error_html = "".join(f"<p class='error'>{_e(item)}</p>" for item in errors)
         notice_html = f"<p class='ok'>{_e(notice)}</p>" if notice else ""
-        status = row["status"] if row is not None else "new"
         recipients = store.recipients_of(conn, row["id"]) if row is not None else []
         recipients_html = "".join(
             f"""<tr><td>{_e(r['address'])}</td><td>{_e(r['status'])}</td><td>
@@ -195,7 +244,7 @@ Ask an admin to send you a new one.</p>""")
         action_path = "/p/clients" if is_new else f"/p/clients/{row['id']}"
         saved = "" if is_new else f'<p><a href="/p/clients/{row["id"]}/preview" target="_blank">Preview this week\'s feed</a></p>'
         body = f"""<h2>{'New client' if is_new else _e(_one(fields, 'client_name') or 'Client')}</h2>
-{notice_html}{error_html}{suggested_note}
+{notice_html}{error_html}{approval_note}{suggested_note}
 <form method="post" action="{action_path}" class="stack">
 <input type="hidden" name="csrf" value="{_e(person['csrf'])}">
 <label>Client name <span class="req">*</span><input name="client_name" value="{_e(_one(fields, 'client_name'))}" maxlength="120" required></label>
@@ -244,30 +293,51 @@ Ask an admin to send you a new one.</p>""")
             store.update_client(conn, client_id, data, now, reviewed=ticked)
         store.add_recipients(conn, client_id, check.accepted, now)
         row = store.client(conn, client_id)
+        store.audit(conn, person["email"], "client.create" if existing is None else "client.update",
+                    row["client_name"], f"client {client_id}", now=now)
 
         activated = False
         if _field(form, "activate") == "1" and row["status"] != "paused":
             reviewed = row["reviewed_at"] is not None or not data["suggested"]
             has_team = bool(store.active_recipient_rows(conn, client_id))
-            if not reviewed:
+            if not store.is_approved(person):
+                notes.append("Your account is waiting for admin approval, so this client is saved as a draft.")
+            elif not reviewed:
                 notes.append("Confirm the suggested values (tick the box) to activate. Saved as a draft.")
             elif not has_team:
                 notes.append("Add at least one team member to activate. Saved as a draft.")
             else:
                 store.set_client_status(conn, client_id, "active", now)
+                store.audit(conn, person["email"], "client.activate", row["client_name"], now=now)
                 activated = True
+
+        if existing is not None and person["role"] != "admin" and row["status"] == "active":
+            self._notify_edit(conn, person, row, now)
         if notes:
             submitted = {key: list(values) for key, values in form.items()}  # keep the manager's unsaved typing
             return self._form(handler, person, conn, store.client(conn, client_id), submitted, notes, is_new=False)
         return self._redirect(handler, f"/p/clients/{client_id}?msg={'activated' if activated else 'saved'}")
+
+    def _notify_edit(self, conn, person, row, now) -> None:
+        """A manager changed an active client: the admins are told, with a sign-in link to the admin page."""
+        def build(link: str, admin) -> tuple[str, str, str]:
+            return mail.notice(
+                self.cfg,
+                subject=f"Client changed: {row['client_name']}",
+                heading="A client feed was changed",
+                paragraphs=[f"{person['email']} changed {row['client_name']}.",
+                            "Open the admin page to review the change. Everything is in the audit log."],
+                button=("Open the admin page", link),
+            )
+
+        notify.notify_people(conn, self.cfg, self.settings, self.base, now, notify.admins(conn), build)
 
     def _preview(self, handler, row, conn, now) -> None:
         pool = feed_runner.screened_news(self.cfg, conn, now - timedelta(days=self.settings.window_days))
         built = feed_runner.build_one(conn, self.settings, pool, row, now, dedupe=False)
         if not built.matches:
             return self._page(handler, 200, "Preview", "<p>No matching news in the last week.</p>")
-        sections = [built]
-        subject, body_html, _ = feed_runner.message_for(self.cfg, self.settings, sections, now=now, unsub_links=None)
+        subject, body_html, _ = feed_runner.message_for(self.cfg, self.settings, [built], now=now, unsub_links=None)
         logo = mail.logo_inline(self.cfg)["logo_white"]
         if logo.is_file():
             data = base64.b64encode(logo.read_bytes()).decode("ascii")
@@ -286,10 +356,20 @@ Ask an admin to send you a new one.</p>""")
     def _admin_home(self, handler, person, conn, now, notice_html: str = "") -> None:
         if person["role"] != "admin":
             return self._page(handler, 404, "Not found", "<p>Not found.</p>", person=person)
+        csrf = _e(person["csrf"])
+        requests_rows = "".join(
+            f"""<tr><td>{_e(r['manager_email'])}</td><td>{self._when(r['submitted_at'])}</td>
+<td>{_e(', '.join(c['client_name'] for c in store.clients_of(conn, r['manager_id'])) or 'no clients')}</td>
+<td><form method="post" action="/a/requests/{r['id']}/approve" class="inline"><input type="hidden" name="csrf" value="{csrf}">
+<button>Approve</button></form>
+<form method="post" action="/a/requests/{r['id']}/reject" class="inline"><input type="hidden" name="csrf" value="{csrf}">
+<input name="reason" placeholder="Reason" required maxlength="500"> <button class="secondary">Reject</button></form></td></tr>"""
+            for r in store.pending_requests(conn)
+        )
         people_rows = "".join(
             f"""<tr><td>{_e(p['email'])}</td><td>{_e(p['name'])}</td><td>{_e(p['role'])}</td>
-<td>{'active' if p['active'] else 'deactivated'}</td>
-<td><form method="post" action="/a/people/{p['id']}/invite"><input type="hidden" name="csrf" value="{_e(person['csrf'])}"><button class="secondary">New sign-in link</button></form></td></tr>"""
+<td>{'active' if p['active'] else 'deactivated'}{' · approved' if p['approved_at'] else ' · waiting for approval' if p['role'] == 'manager' else ''}</td>
+<td><form method="post" action="/a/people/{p['id']}/invite"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary">New sign-in link</button></form></td></tr>"""
             for p in store.people(conn)
         )
         managers = store.managers(conn)
@@ -305,27 +385,36 @@ Ask an admin to send you a new one.</p>""")
             client_rows.append(
                 f"""<tr><td><a href="/p/clients/{c['id']}">{_e(c['client_name'])}</a></td><td>{_e(owner['email'] if owner else '')}</td>
 <td>{_e(c['status'])} {pending}</td><td>{count}</td>
-<td><form method="post" action="/a/clients/{c['id']}/manager" class="inline"><input type="hidden" name="csrf" value="{_e(person['csrf'])}">
+<td><form method="post" action="/a/clients/{c['id']}/manager" class="inline"><input type="hidden" name="csrf" value="{csrf}">
 <select name="manager_id">{options}</select><button class="secondary">Reassign</button></form>
-<form method="post" action="/a/clients/{c['id']}/status" class="inline"><input type="hidden" name="csrf" value="{_e(person['csrf'])}">
+<form method="post" action="/a/clients/{c['id']}/status" class="inline"><input type="hidden" name="csrf" value="{csrf}">
 <input type="hidden" name="status" value="{'paused' if c['status'] == 'active' else 'active'}">
 <button class="secondary">{'Pause' if c['status'] == 'active' else 'Resume'}</button></form></td></tr>"""
             )
+        audit_rows = "".join(
+            f"<tr><td>{self._when(a['at'])}</td><td>{_e(a['actor'])}</td><td>{_e(a['action'])}</td>"
+            f"<td>{_e(a['target'])}</td><td>{_e(a['detail'])}</td></tr>"
+            for a in store.recent_audit(conn)
+        )
         run = store.run_for_date(conn, now.astimezone(self.cfg.newsletter.timezone).date().isoformat())
         body = f"""<h2>Admin</h2>
 {notice_html}
 <p>Weekly feed: <strong>{'ON' if personal_sending_enabled() else 'OFF'}</strong> (PERSONAL_SEND_ENABLED).
 Today's run: {_e(run['status']) if run else 'not run yet'}.</p>
+<h2>Approval requests</h2>
+<table>{requests_rows or '<tr><td class="muted">No requests waiting.</td></tr>'}</table>
 <h2>Invite a manager or admin</h2>
 <form method="post" action="/a/people" class="stack">
-<input type="hidden" name="csrf" value="{_e(person['csrf'])}">
+<input type="hidden" name="csrf" value="{csrf}">
 <label>Email (rankuno.com)<input name="email" required></label>
 <label>Name<input name="name"></label>
 <label>Role<select name="role"><option value="manager">Manager</option><option value="admin">Admin</option></select></label>
 <div class="actions"><button>Create sign-in link</button></div>
 </form>
 <h2>People</h2><table>{people_rows}</table>
-<h2>Clients</h2><table>{''.join(client_rows) or '<tr><td class="muted">No clients yet.</td></tr>'}</table>"""
+<h2>Clients</h2><table>{''.join(client_rows) or '<tr><td class="muted">No clients yet.</td></tr>'}</table>
+<h2>Audit log (latest 40)</h2>
+<table>{audit_rows or '<tr><td class="muted">Nothing yet.</td></tr>'}</table>"""
         self._page(handler, 200, "Admin", body, person=person)
 
     def _admin_action(self, handler, person, path, form, conn, now) -> None:
@@ -335,12 +424,15 @@ Today's run: {_e(run['status']) if run else 'not run yet'}.</p>
             return self._page(handler, 403, "Refused", "<p>Your session has expired.</p>", person=person)
         if path == "/a/people":
             return self._invite(handler, person, form, conn, now)
-        parts = path.split("/")  # "", "a", "people"|"clients", id, action
+        parts = path.split("/")  # "", "a", "people"|"clients"|"requests", id, action
+        if len(parts) == 5 and parts[2] == "requests" and parts[3].isdigit() and parts[4] in ("approve", "reject"):
+            return self._decide(handler, person, int(parts[3]), parts[4] == "approve", form, conn, now)
         if len(parts) == 5 and parts[2] == "people" and parts[3].isdigit() and parts[4] == "invite":
             target = store.person(conn, int(parts[3]))
             if target is None or not target["active"]:
                 return self._redirect(handler, "/a/")
             raw = store.create_invite(conn, target["id"], person["email"], now, self.settings.invite_days)
+            store.audit(conn, person["email"], "invite.new_link", target["email"], now=now)
             return self._show_link(handler, person, conn, now, target["email"], target["name"], raw)
         if len(parts) == 5 and parts[2] == "clients" and parts[3].isdigit():
             row = store.client(conn, int(parts[3]))
@@ -350,10 +442,43 @@ Today's run: {_e(run['status']) if run else 'not run yet'}.</p>
                 manager = store.person(conn, int(_field(form, "manager_id") or 0))
                 if manager is not None and manager["role"] in ("manager", "admin") and manager["active"]:
                     store.reassign_client(conn, row["id"], manager["id"], now)
+                    store.audit(conn, person["email"], "client.reassign", row["client_name"], manager["email"], now=now)
             elif parts[4] == "status" and _field(form, "status") in ("active", "paused"):
                 store.set_client_status(conn, row["id"], _field(form, "status"), now)
+                store.audit(conn, person["email"], f"client.{_field(form, 'status')}", row["client_name"], now=now)
             return self._redirect(handler, "/a/")
         return self._page(handler, 404, "Not found", "<p>Not found.</p>", person=person)
+
+    def _decide(self, handler, person, request_id: int, approve: bool, form, conn, now) -> None:
+        reason = (_field(form, "reason") or "").strip()[:500]
+        if not approve and not reason:
+            return self._admin_home(handler, person, conn, now, notice_html='<p class="error">Give a reason for rejecting.</p>')
+        row = store.decide_request(conn, request_id, approve=approve, by=person["email"], reason=reason, now=now)
+        if row is None:
+            return self._admin_home(handler, person, conn, now, notice_html='<p class="notice">This request was already decided.</p>')
+        verb = "approved" if approve else "rejected"
+        store.audit(conn, person["email"], f"request.{verb}", row["manager_email"], reason, now=now)
+
+        manager = store.person(conn, row["manager_id"])
+        if approve:
+            manager_paragraphs = ["Your account is approved. Sign in to activate your clients.",
+                                  "Each client's team members receive the weekly feed only after you activate it."]
+        else:
+            manager_paragraphs = [f"Your request was not approved: {reason}", "Sign in to update your clients and submit again."]
+
+        def to_manager(link: str, _person) -> tuple[str, str, str]:
+            return mail.notice(self.cfg, subject=f"Your client feed account: {verb}", heading=f"Request {verb}",
+                               paragraphs=manager_paragraphs, button=("Sign in", link))
+
+        notify.notify_people(conn, self.cfg, self.settings, self.base, now, [manager], to_manager)
+
+        def to_admins(link: str, _admin) -> tuple[str, str, str]:
+            return mail.notice(self.cfg, subject=f"Request {verb}: {row['manager_email']}", heading=f"Request {verb}",
+                               paragraphs=[f"{person['email']} {verb} the request from {row['manager_email']}."],
+                               button=("Open the admin page", link))
+
+        notify.notify_people(conn, self.cfg, self.settings, self.base, now, notify.admins(conn), to_admins)
+        return self._admin_home(handler, person, conn, now, notice_html=f'<p class="ok">Request {verb}.</p>')
 
     def _invite(self, handler, person, form, conn, now) -> None:
         address = normalize_address((_field(form, "email") or "").strip())
@@ -367,19 +492,20 @@ Today's run: {_e(run['status']) if run else 'not run yet'}.</p>
             return self._admin_home(handler, person, conn, now, notice_html=f'<p class="error">{_e(address)}: {_e(reason)}</p>')
         name = (_field(form, "name") or "").strip()[:120]
         person_id = store.add_person(conn, address, name, role, now)
+        if role == "admin":
+            store.approve_person(conn, person_id, now)
         raw = store.create_invite(conn, person_id, person["email"], now, self.settings.invite_days)
+        store.audit(conn, person["email"], "invite.create", address, role, now=now)
         return self._show_link(handler, person, conn, now, address, name, raw)
 
     def _show_link(self, handler, person, conn, now, address, name, raw) -> None:
         link = f"{self.base}/m/{raw}"
         if personal_sending_enabled():
-            try:
-                self._email_invite(address, name, link)
+            subject, html_body, text_body = mail.invite_subject(self.cfg), *mail.invite_email(self.cfg, name, link, self.settings.invite_days)
+            if notify.send(self.cfg, address, subject, html_body, text_body):
                 note = f"A sign-in link was emailed to {address}. It works once and expires in {self.settings.invite_days} days."
                 return self._admin_home(handler, person, conn, now, notice_html=f'<p class="ok">{_e(note)}</p>')
-            except Exception as exc:  # noqa: BLE001 - show the failure and keep the link available to copy
-                log.error("Invitation email to %s failed: %s", address, exc)
-                note = f"The email could not be sent ({exc}). Copy the link below and send it yourself."
+            note = "The email could not be sent. Copy the link below and send it yourself."
         else:
             note = "Email sending is off, so no email was sent. Copy the link below and send it yourself."
         body_notice = f"""<p class="notice">{_e(note)}</p>
@@ -387,12 +513,8 @@ Today's run: {_e(run['status']) if run else 'not run yet'}.</p>
 <pre>{_e(link)}</pre>"""
         self._admin_home(handler, person, conn, now, notice_html=body_notice)
 
-    def _email_invite(self, address: str, name: str, link: str) -> None:
-        profile = load_profile(PRODUCTION, self.cfg)
-        html_body, text_body = mail.invite_email(self.cfg, name, link, self.settings.invite_days)
-        message = feed_runner._message(profile, self.cfg, mail.invite_subject(self.cfg), html_body, text_body, address)
-        with profile.transport() as transport:
-            transport.send(message)
+    def _when(self, value: str) -> str:
+        return db.from_iso(value).astimezone(self.cfg.newsletter.timezone).strftime("%d %b %Y, %H:%M")
 
     # Unsubscribe ------------------------------------------------------------------------------
 
@@ -426,7 +548,7 @@ Today's run: {_e(run['status']) if run else 'not run yet'}.</p>
 <title>{_e(title)} · Client feeds</title>
 <style>
   body {{ font-family: Arial, Helvetica, sans-serif; color: #262626; background: #F2F2F2; margin: 0; padding: 24px 16px; }}
-  main {{ max-width: 760px; margin: 0 auto; background: #fff; border-top: 5px solid #DF212A; padding: 24px 28px; }}
+  main {{ max-width: 960px; margin: 0 auto; background: #fff; border-top: 5px solid #DF212A; padding: 24px 28px; }}
   h1 {{ font-size: 22px; margin: 0 0 4px; }} h2 {{ font-size: 16px; margin: 22px 0 8px; }}
   p, td, label, legend {{ font-size: 14px; line-height: 21px; }} .muted {{ color: #707070; }}
   .error {{ color: #A1161D; font-weight: bold; }} .ok {{ color: #1B6E2E; font-weight: bold; }}
@@ -483,8 +605,6 @@ def _field(form: dict, name: str) -> str | None:
 
 
 def _csrf_ok(form: dict, person) -> bool:
-    import hmac
-
     supplied = _field(form, "csrf") or ""
     return bool(person) and hmac.compare_digest(supplied, person["csrf"])
 
@@ -511,7 +631,7 @@ def _same_origin(headers) -> bool:
     return bool(source) and source != "null" and urlsplit(source).netloc == headers.get("Host")
 
 
-def _row_fields(row) -> dict:
+def _row_fields(row: sqlite3.Row) -> dict:
     """Form values for an existing client, as the form shows them."""
     competitors = json.loads(row["competitors_json"])
     return {
@@ -532,9 +652,10 @@ def _recipients_table(rows_html: str) -> str:
 <table>{rows_html or '<tr><td class="muted">No team members yet.</td></tr>'}</table>"""
 
 
-def _client_row(row, conn) -> str:
+def _client_row(row: sqlite3.Row, conn: sqlite3.Connection) -> str:
+    review = " · review pending" if row["suggested_json"] != "[]" and row["reviewed_at"] is None else ""
     return (
         f'<tr><td><a href="/p/clients/{row["id"]}">{_e(row["client_name"])}</a></td>'
-        f'<td>{_e(row["status"])}{" · review pending" if row["suggested_json"] != "[]" and row["reviewed_at"] is None else ""}</td>'
+        f'<td>{_e(row["status"])}{review}</td>'
         f'<td>{len(store.active_recipient_rows(conn, row["id"]))} team member(s)</td></tr>'
     )
