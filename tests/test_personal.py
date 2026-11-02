@@ -191,7 +191,7 @@ def test_unsubscribe_stops_one_client_only(pconn):
 
 def data_for(name, suggested=()):
     return {"client_name": name, "website": "", "aliases": [], "industries": ["bfsi"], "competitors": [],
-            "keywords": [], "excludes": [], "suggested": list(suggested)}
+            "keywords": [], "excludes": [], "suggested": list(suggested), "send_day": 6}  # 6 = Sunday
 
 
 def test_unreviewed_suggestions_keep_a_client_out_of_the_run(pconn):
@@ -335,7 +335,7 @@ def test_is_due_monday_ten_once(pconn, cfg, settings):
     monday = datetime(2026, 11, 2, 10, 5, tzinfo=IST)  # a Monday
     assert feed.is_due(monday, settings, pconn, IST)
     assert not feed.is_due(datetime(2026, 11, 2, 9, 59, tzinfo=IST), settings, pconn, IST)
-    assert not feed.is_due(datetime(2026, 11, 3, 10, 5, tzinfo=IST), settings, pconn, IST)  # Tuesday
+    assert feed.is_due(datetime(2026, 11, 3, 10, 5, tzinfo=IST), settings, pconn, IST)  # the daily run: Tuesday too
     store.start_run(pconn, monday.date().isoformat(), monday.astimezone(timezone.utc))
     assert not feed.is_due(monday, settings, pconn, IST)
 
@@ -804,3 +804,41 @@ def test_form_shows_the_custom_box_with_the_saved_value(web_db):
     page = call(app, "GET", f"/p/clients/{client}", cookie=raw)
     assert page.status == 200
     assert 'name="custom_industry" value="Logistics &amp; 3PL"' in page.text
+
+
+# Feed day chosen per client -------------------------------------------------------------------
+
+
+WEDNESDAY_0500_UTC = datetime(2026, 9, 16, 5, 0, tzinfo=timezone.utc)  # 10:30 IST on a Wednesday
+
+
+def set_feed_day(conn, client_id, day):
+    conn.execute("UPDATE personal_clients SET send_day = ? WHERE id = ?", (day, client_id))
+
+
+def test_a_client_is_sent_only_on_its_feed_day(monkeypatch, pconn, cfg, weekly):
+    profile, client = weekly
+    set_feed_day(pconn, client, 2)  # Wednesday
+    sunday = feed.run_weekly(cfg, pconn, now=NOW, resolver=dns())
+    assert sunday.sent == [] and profile.transport_obj.sent == []
+    wednesday = feed.run_weekly(cfg, pconn, now=WEDNESDAY_0500_UTC, resolver=dns())
+    assert sorted(wednesday.sent) == ["ann@rankuno.com", "bob@rankuno.com"]
+
+
+def test_a_client_gets_at_most_one_feed_a_week_even_if_its_day_changes(monkeypatch, pconn, cfg, weekly):
+    profile, client = weekly
+    set_feed_day(pconn, client, 2)
+    feed.run_weekly(cfg, pconn, now=WEDNESDAY_0500_UTC, resolver=dns())
+    set_feed_day(pconn, client, 3)  # the manager moves it to Thursday
+    thursday = feed.run_weekly(cfg, pconn, now=WEDNESDAY_0500_UTC + timedelta(days=1), resolver=dns())
+    assert thursday.sent == []  # only one day after the last feed
+    assert len(profile.transport_obj.sent) == 2
+
+
+def test_the_form_saves_the_feed_day_and_defaults_to_monday(settings):
+    data, errors, _ = profiles.parse_form(fields(client_name="Acme", industries=["bfsi"], send_day="4"), settings, is_new=True)
+    assert not errors and data["send_day"] == 4
+    default, errors, _ = profiles.parse_form(fields(client_name="Acme", industries=["bfsi"]), settings, is_new=True)
+    assert default["send_day"] == 0
+    _, errors, _ = profiles.parse_form(fields(client_name="Acme", industries=["bfsi"], send_day="9"), settings, is_new=True)
+    assert any("day of the week" in error for error in errors)

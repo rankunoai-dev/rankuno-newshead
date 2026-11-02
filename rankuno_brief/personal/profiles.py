@@ -113,9 +113,14 @@ def parse_form(
             if keywords:
                 suggested.append(KEYWORDS_FIELD)
 
+    raw_day = one("send_day") or "0"
+    send_day = int(raw_day) if raw_day.isdigit() and int(raw_day) <= 6 else None
+    if send_day is None:
+        errors.append("Choose the day of the week the feed should arrive.")
     if errors:
         return None, errors, {}
     data = {
+        "send_day": send_day,
         "client_name": name,
         "website": website or "",
         "aliases": aliases,

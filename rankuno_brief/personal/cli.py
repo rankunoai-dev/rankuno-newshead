@@ -88,7 +88,7 @@ def cmd_personal(cfg: Config, conn: sqlite3.Connection, args: argparse.Namespace
         settings = cached_settings(cfg.root)
         print(f"Weekly feed: {'ON' if personal_sending_enabled() else 'OFF'} (PERSONAL_SEND_ENABLED)")
         print(f"Sign-in links point at: {public_base_url() or 'NOT SET (PERSONAL_BASE_URL)'}")
-        print(f"Runs {['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][settings.run_weekday]} {settings.run_time:%H:%M}")
+        print(f"Runs daily at {settings.run_time:%H:%M}; each client's feed goes out on its own feed day")
         for row in store.clients_of(conn):
             print(f"  {row['client_name']}: {row['status']}, {len(store.active_recipient_rows(conn, row['id']))} team member(s)")
         return 0

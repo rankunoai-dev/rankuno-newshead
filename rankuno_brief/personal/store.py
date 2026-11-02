@@ -72,7 +72,8 @@ CREATE TABLE IF NOT EXISTS personal_clients (
     version          INTEGER NOT NULL DEFAULT 1,
     created_at       TEXT NOT NULL,
     updated_at       TEXT NOT NULL,
-    activated_at     TEXT
+    activated_at     TEXT,
+    send_day         INTEGER NOT NULL DEFAULT 0    -- weekday of the weekly feed: 0 = Monday ... 6 = Sunday
 );
 
 CREATE TABLE IF NOT EXISTS personal_recipients (
@@ -165,6 +166,7 @@ def connect(db_path: Path | str) -> sqlite3.Connection:
 _ADDED_COLUMNS = (
     ("personal_people", "approved_at", "TEXT"),
     ("personal_people", "shared", "INTEGER NOT NULL DEFAULT 0"),
+    ("personal_clients", "send_day", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 
@@ -310,12 +312,12 @@ def create_client(conn: sqlite3.Connection, manager_id: int, data: dict, now: da
     with conn:
         cursor = conn.execute(
             """INSERT INTO personal_clients (manager_id, client_name, website, aliases_json, industries_json,
-                   competitors_json, keywords_json, excludes_json, suggested_json, reviewed_at, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'draft', ?, ?)""",
+                   competitors_json, keywords_json, excludes_json, suggested_json, send_day, reviewed_at, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'draft', ?, ?)""",
             (
                 manager_id, data["client_name"], data["website"], json.dumps(data["aliases"]),
                 json.dumps(data["industries"]), json.dumps(data["competitors"]), json.dumps(data["keywords"]),
-                json.dumps(data["excludes"]), json.dumps(data["suggested"]), _iso(now), _iso(now),
+                json.dumps(data["excludes"]), json.dumps(data["suggested"]), int(data.get("send_day", 0)), _iso(now), _iso(now),
             ),
         )
     return cursor.lastrowid
@@ -326,13 +328,13 @@ def update_client(conn: sqlite3.Connection, client_id: int, data: dict, now: dat
     with conn:
         conn.execute(
             """UPDATE personal_clients SET client_name = ?, website = ?, aliases_json = ?, industries_json = ?,
-                   competitors_json = ?, keywords_json = ?, excludes_json = ?, suggested_json = ?,
+                   competitors_json = ?, keywords_json = ?, excludes_json = ?, suggested_json = ?, send_day = ?,
                    reviewed_at = CASE WHEN ? THEN ? ELSE reviewed_at END, version = version + 1, updated_at = ?
                WHERE id = ?""",
             (
                 data["client_name"], data["website"], json.dumps(data["aliases"]), json.dumps(data["industries"]),
                 json.dumps(data["competitors"]), json.dumps(data["keywords"]), json.dumps(data["excludes"]),
-                json.dumps(data["suggested"]), 1 if reviewed else 0, _iso(now), _iso(now), client_id,
+                json.dumps(data["suggested"]), int(data.get("send_day", 0)), 1 if reviewed else 0, _iso(now), _iso(now), client_id,
             ),
         )
 
@@ -382,6 +384,12 @@ def active_clients(conn: sqlite3.Connection) -> list[sqlite3.Row]:
              AND EXISTS (SELECT 1 FROM personal_recipients r WHERE r.client_id = c.id AND r.status = 'active')
            ORDER BY c.id"""
     ).fetchall()
+
+
+def last_issue_at(conn: sqlite3.Connection, client_id: int) -> datetime | None:
+    """When this client's last weekly feed was built, or None."""
+    row = conn.execute("SELECT MAX(window_end) AS last FROM personal_issues WHERE client_id = ?", (client_id,)).fetchone()
+    return db.from_iso(row["last"]) if row and row["last"] else None
 
 
 def client_suggested(row: sqlite3.Row) -> list[str]:

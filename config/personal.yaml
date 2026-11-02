@@ -10,8 +10,8 @@ feed:
   max_stories: 10         # per client
   max_per_source: 3       # per client, so one site cannot fill the feed
   min_score: 1.5          # a story must reach this score to be included
-  run_day: Mon            # weekly run day
-  run_time: "10:00"       # local time (newsletter.timezone in settings.yaml)
+  run_day: Mon            # not used: each client chooses its own feed day on the form
+  run_time: "10:00"       # the daily run; each client's feed goes out on its own day (newsletter.timezone)
   session_days: 14        # manager sign-in lasts this long
   invite_days: 7          # an invitation link works this long
 

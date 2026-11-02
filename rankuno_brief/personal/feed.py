@@ -62,20 +62,34 @@ class Report:
 # Building feeds -------------------------------------------------------------------------------
 
 
-def due_clients(conn: sqlite3.Connection, test: bool) -> list[sqlite3.Row]:
-    if not test:
-        return store.active_clients(conn)
-    # Test runs preview every reviewed, active client, whether or not it has real recipients yet.
-    return [
-        row for row in store.clients_of(conn)
-        if row["status"] == "active" and (row["suggested_json"] == "[]" or row["reviewed_at"] is not None)
-    ]
+MIN_DAYS_BETWEEN_FEEDS = 6  # a client gets at most one feed a week, even if its feed day was just changed
+
+
+def due_clients(conn: sqlite3.Connection, test: bool, now: datetime, tz) -> list[sqlite3.Row]:
+    """Clients whose feed is due now: today is their feed day and they have not had one in the last week.
+    Test runs preview every reviewed, active client, whatever its day."""
+    if test:
+        return [
+            row for row in store.clients_of(conn)
+            if row["status"] == "active" and (row["suggested_json"] == "[]" or row["reviewed_at"] is not None)
+        ]
+    today = now.astimezone(tz).weekday()
+    due = []
+    for row in store.active_clients(conn):
+        if row["send_day"] != today:
+            continue
+        last = store.last_issue_at(conn, row["id"])
+        if last is not None and now - last < timedelta(days=MIN_DAYS_BETWEEN_FEEDS):
+            log.info("Client %s already had its feed this week; skipped", row["client_name"])
+            continue
+        due.append(row)
+    return due
 
 
 def build_feeds(
     cfg: Config, conn: sqlite3.Connection, settings: PersonalSettings, now: datetime, *, test: bool
 ) -> list[Feed]:
-    clients = due_clients(conn, test)
+    clients = due_clients(conn, test, now, cfg.newsletter.timezone)
     if not clients:
         return []
     pool = screened_news(cfg, conn, now - timedelta(days=settings.window_days))
@@ -236,6 +250,8 @@ def run_weekly(cfg: Config, conn: sqlite3.Connection, *, now: datetime | None = 
 
     report.feeds = build_feeds(cfg, conn, settings, now, test=test)
     feeds_with_news = [feed for feed in report.feeds if feed.matches]
+    if not report.feeds:
+        log.info("No client has its feed day today")
     log.info("Personal feeds: %d client(s), %d with news this week", len(report.feeds), len(feeds_with_news))
 
     own_resolver = resolver is None
@@ -336,10 +352,9 @@ def _message(profile: MailProfile, cfg: Config, subject: str, html_body: str, te
 
 
 def is_due(now: datetime, settings: PersonalSettings, conn: sqlite3.Connection, tz) -> bool:
-    """The weekly run is due from its time on its day, within 3 hours (a restart still runs it), once per date."""
+    """The daily run is due from its time each day, within 3 hours (a restart still runs it), once per date.
+    Each client is sent only on its own feed day, so a day with no clients sends nothing."""
     local = now.astimezone(tz)
-    if local.weekday() != settings.run_weekday:
-        return False
     slot = datetime.combine(local.date(), settings.run_time, tzinfo=tz)
     if not (slot <= local <= slot + timedelta(hours=3)):
         return False

@@ -355,6 +355,11 @@ Ask an admin to send you a new one.</p>""")
         ) if row is not None else ""
         action_path = "/p/clients" if is_new else f"/p/clients/{row['id']}"
         saved = "" if is_new else f'<p><a href="/p/clients/{row["id"]}/preview" target="_blank">Preview this week\'s feed</a></p>'
+        day_now = _one(fields, "send_day") or "0"
+        day_options = "".join(
+            f'<option value="{index}"{" selected" if str(index) == day_now else ""}>{name}</option>'
+            for index, name in enumerate(("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))
+        )
         body = f"""<p class="kicker">Client profile</p>
 <h1>{'New client' if is_new else _e(_one(fields, 'client_name') or 'Client')}</h1>
 {notice_html}{error_html}{approval_note}{suggested_note}
@@ -384,6 +389,7 @@ Ask an admin to send you a new one.</p>""")
 </section>
 <section>
   <h2>4. Weekly feed recipients</h2>
+  <label>Day of the week the feed arrives (once a week)<select name="send_day">{day_options}</select></label>
   <label>Team members, one per line or separated by commas<textarea name="recipients" rows="4" placeholder="name@rankuno.com">{_e(_one(fields, 'recipients'))}</textarea></label>
   <label class="check"><input type="checkbox" name="activate" value="1"> Activate: send this client's feed every Monday</label>
 </section>
@@ -772,6 +778,7 @@ def _row_fields(row: sqlite3.Row) -> dict:
         "keywords": ["\n".join(json.loads(row["keywords_json"]))],
         "excludes": ["\n".join(json.loads(row["excludes_json"]))],
         "recipients": [""],
+        "send_day": [str(row["send_day"])],
         "custom_industry": [next((i[len(profiles.CUSTOM_PREFIX):] for i in json.loads(row["industries_json"])
                                   if i.startswith(profiles.CUSTOM_PREFIX)), "")],
         "_suggested": json.loads(row["suggested_json"]),
