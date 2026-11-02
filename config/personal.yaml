@@ -1,0 +1,59 @@
+# Personalised weekly client feed (separate from the general newsletter).
+#
+# Industries (lines of business) a client can be filed under. A profile's industries give the
+# generic keywords used to match news. Competitors and keywords here are only SUGGESTIONS:
+# when a manager leaves them blank on the form, these are pre-filled and the manager must
+# review and confirm them before the first send.
+
+feed:
+  window_days: 7          # each weekly feed covers the last 7 days (or since the client was activated)
+  max_stories: 10         # per client
+  max_per_source: 3       # per client, so one site cannot fill the feed
+  min_score: 1.5          # a story must reach this score to be included
+  run_day: Mon            # weekly run day
+  run_time: "10:00"       # local time (newsletter.timezone in settings.yaml)
+  session_days: 14        # manager sign-in lasts this long
+  invite_days: 7          # an invitation link works this long
+
+industries:
+  - id: supply_chain_procurement
+    title: Supply chain & procurement
+    keywords: [supply chain, procurement, sourcing, source-to-pay, spend management, supplier risk,
+               supplier management, logistics, inventory management, e-procurement, purchase order]
+    competitors: [Coupa, SAP Ariba, Jaggaer, Ivalua, Zycus, Basware, Oracle Fusion Procurement]
+    keywords_default: [procurement software, supply chain software, spend analytics]
+
+  - id: bfsi
+    title: Banking, financial services & insurance
+    keywords: [banking, fintech, lending, payments, insurance, underwriting, wealth management,
+               core banking, regtech, digital banking]
+    competitors: [Temenos, Finastra, nCino, FIS, Fiserv, Infosys Finacle]
+    keywords_default: [digital banking, fintech software, banking technology]
+
+  - id: healthcare
+    title: Healthcare & life sciences
+    keywords: [healthcare, hospital, pharma, pharmaceutical, medical device, clinical, life sciences,
+               patient engagement, telehealth, health insurance]
+    competitors: [Veeva, Cerner, Epic Systems, IQVIA, Medidata]
+    keywords_default: [healthcare technology, pharma marketing, digital health]
+
+  - id: retail_ecommerce
+    title: Retail & e-commerce
+    keywords: [retail, e-commerce, ecommerce, omnichannel, merchandising, online shopping,
+               marketplace, D2C, direct-to-consumer, consumer brands]
+    competitors: [Shopify, Salesforce Commerce Cloud, Adobe Commerce, BigCommerce, Algolia]
+    keywords_default: [ecommerce growth, retail technology, online marketplace]
+
+  - id: manufacturing
+    title: Manufacturing & industrial
+    keywords: [manufacturing, industrial, factory, industry 4.0, plant operations, OEM, capital goods,
+               production planning, MES]
+    competitors: [Siemens, Rockwell Automation, Dassault Systemes, Epicor, Infor]
+    keywords_default: [smart manufacturing, industrial software, manufacturing technology]
+
+  - id: technology_saas
+    title: Technology & SaaS
+    keywords: [SaaS, software company, cloud platform, enterprise software, B2B software,
+               developer tools, cybersecurity, data platform]
+    competitors: [HubSpot, Atlassian, Zendesk, Freshworks, ServiceNow]
+    keywords_default: [B2B SaaS marketing, enterprise software, cloud software]

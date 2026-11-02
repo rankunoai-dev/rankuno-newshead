@@ -63,6 +63,9 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--no-fetch", action="store_true", help="build from the news already stored")
 
     commands.add_parser("serve", help="hosting mode: run the schedule and the admin page (PORT, ADMIN_TOKEN)")
+    from .personal import cli as personal_cli
+
+    personal_cli.add_parser(commands)
     commands.add_parser("sources", help="show the health of every source")
 
     security = commands.add_parser("security", help="content screening, recipient and deliverability checks")
@@ -104,6 +107,7 @@ def main(argv: list[str] | None = None) -> int:
             "run": cmd_run,
             "sources": cmd_sources,
             "security": cmd_security,
+            "personal": personal_cli.cmd_personal,
         }[args.command]
         return handler(cfg, conn, args)
     except ConfigError as exc:

@@ -36,6 +36,11 @@ from . import cli, db
 from .config import Config, ConfigError
 from .mail_profiles import PRODUCTION, TEST, load_profile, production_sending_enabled
 from .mailer import MailError
+from .personal import feed as personal_feed
+from .personal import web as personal_web
+from .personal.settings import cached_settings as personal_settings
+from .personal.settings import personal_sending_enabled as personal_sending_on
+from .personal.settings import public_base_url
 
 log = logging.getLogger(__name__)
 
@@ -172,6 +177,14 @@ class App:
         self.token = token
         self.runner = JobRunner(cfg)
         self.state = ScheduleState()
+        self.personal = None  # personalised client feeds: pages need PERSONAL_BASE_URL
+        try:
+            base = public_base_url()
+        except ConfigError as exc:
+            log.error("%s; the client feed pages stay off", exc)
+            base = None
+        if base:
+            self.personal = personal_web.PersonalWeb(cfg, base)
 
     # Jobs the admin page and the schedule start
     def start_test(self) -> bool:
@@ -206,6 +219,27 @@ class App:
                 self.state.last_fetch_date = now.date()
             elif job == "production" and self.runner.start("scheduled issue", self._production):
                 self.state.production_dates.add(now.date())
+        self._tick_personal(now)
+
+    def _tick_personal(self, now: datetime) -> None:
+        """The weekly client feed, once per week (its run is recorded in the database, so a restart cannot repeat it)."""
+        if self.personal is None or not personal_sending_on() or self.runner.current is not None:
+            return
+        settings = personal_settings(self.cfg.root)
+        conn = db.connect(self.cfg.db_path)
+        try:
+            from .personal import store as personal_store
+
+            conn.executescript(personal_store.SCHEMA)
+            due = personal_feed.is_due(now, settings, conn, self.cfg.newsletter.timezone)
+        finally:
+            conn.close()
+        if due:
+            self.runner.start("personal weekly feed", self._personal_weekly)
+
+    def _personal_weekly(self, conn) -> int:
+        report = personal_feed.run_weekly(self.cfg, conn)
+        return 0 if report.ok else 1
 
 
 # HTTP -----------------------------------------------------------------------------------------------
@@ -244,6 +278,8 @@ class AdminHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urlsplit(self.path).path
+        if self.app.personal is not None and personal_web.is_personal_path(path):
+            return self.app.personal.handle(self, "GET")
         if path == "/health":
             return self._send(200, json.dumps({"status": "ok"}), "application/json")
         if not self._check_auth():
@@ -259,6 +295,8 @@ class AdminHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlsplit(self.path).path
+        if self.app.personal is not None and personal_web.is_personal_path(path):
+            return self.app.personal.handle(self, "POST")
         if not self._check_auth():
             return
         bearer = (self.headers.get("Authorization") or "").lower().startswith("bearer ")
