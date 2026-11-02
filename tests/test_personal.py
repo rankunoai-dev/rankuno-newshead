@@ -842,3 +842,20 @@ def test_the_form_saves_the_feed_day_and_defaults_to_monday(settings):
     assert default["send_day"] == 0
     _, errors, _ = profiles.parse_form(fields(client_name="Acme", industries=["bfsi"], send_day="9"), settings, is_new=True)
     assert any("day of the week" in error for error in errors)
+
+
+def test_an_admin_can_add_another_admin_from_the_dashboard(monkeypatch, web_db, mailbox):
+    cfg, pconn = web_db
+    monkeypatch.setattr(web, "DnsResolver", lambda *a, **k: dns())
+    app = web.PersonalWeb(cfg, "https://brief.example.com")
+    admin = store.person_by_email(pconn, "rajat.singh@rankuno.com")
+    raw, csrf = store.create_session(pconn, admin["id"], REAL, 14)
+    dashboard = call(app, "GET", "/a/", cookie=raw)
+    assert '<option value="admin">Admin</option>' in dashboard.text
+    body = up.urlencode([("csrf", csrf), ("email", "shreya.kale@rankuno.com"), ("name", "Shreya Kale"), ("role", "admin")])
+    result = call(app, "POST", "/a/people", body, cookie=raw)
+    assert result.status == 200 and "sign-in link" in result.text.lower()
+    new_admin = store.person_by_email(pconn, "shreya.kale@rankuno.com")
+    assert new_admin["role"] == "admin" and store.is_approved(new_admin)
+    assert "shreya.kale@rankuno.com" in [person["email"] for person in notify.admins(pconn)]
+    assert store.recent_audit(pconn)[0]["action"] == "invite.create"
