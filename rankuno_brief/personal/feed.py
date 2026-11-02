@@ -19,7 +19,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
-from .. import db
+from .. import db, google_news
 from ..config import Config
 from ..mail_profiles import PRODUCTION, TEST, MailProfile, load_profile
 from ..mailer import MailError, RecipientRejected, build_message
@@ -251,6 +251,7 @@ def run_weekly(cfg: Config, conn: sqlite3.Connection, *, now: datetime | None = 
             return report
 
     report.feeds = build_feeds(cfg, conn, settings, now, test=test)
+    resolve_feed_links(conn, report.feeds)
     feeds_with_news = [feed for feed in report.feeds if feed.matches]
     if not report.feeds:
         log.info("No client has its feed day today")
@@ -331,6 +332,27 @@ def _failed(conn: sqlite3.Connection, run_id: int | None, report: Report, addres
     if run_id is not None:
         store.mark_delivery(conn, run_id, address, "failed", now, error)
     log.error("Personal feed to %s failed: %s", address, error)
+
+
+class _Link:
+    """What google_news.resolve_links needs from a story."""
+
+    def __init__(self, item_id: int, url: str) -> None:
+        self.item_id, self.url, self.also_reported_by = item_id, url, ()
+
+
+def resolve_feed_links(conn: sqlite3.Connection, feeds: list[Feed]) -> None:
+    """Replaces Google News redirect links in the matched stories with the publisher's address, as the general brief
+    does. Resolved addresses are stored, so the next run does not look them up again."""
+    links = [_Link(match.item_id, feed.items[match.item_id]["url"]) for feed in feeds for match in feed.matches]
+    resolved = google_news.resolve_links(links)
+    if not resolved:
+        return
+    db.update_items(conn, {item_id: {"url": url} for item_id, url in resolved.items()})
+    for feed in feeds:
+        for item_id, url in resolved.items():
+            if item_id in feed.items:
+                feed.items[item_id] = {**feed.items[item_id], "url": url}
 
 
 def _record(conn: sqlite3.Connection, run_id: int, report: Report, now: datetime, feeds: list[Feed]) -> None:
