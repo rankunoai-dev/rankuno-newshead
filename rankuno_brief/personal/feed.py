@@ -15,11 +15,13 @@ from .settings import PERSONAL_NAME
 import logging
 import sqlite3
 import time
+from pathlib import Path
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 
-from .. import db, google_news
+from .. import db, enrich, google_news
+from .. import images as story_images
 from ..config import Config
 from ..mail_profiles import PRODUCTION, TEST, MailProfile, load_profile
 from ..mailer import MailError, RecipientRejected, build_message
@@ -218,13 +220,14 @@ def plan_recipients(
 
 
 def message_for(cfg: Config, settings: PersonalSettings, feeds: list[Feed], *, now: datetime,
-                unsub_links: dict[int, str] | None) -> tuple[str, str, str]:
-    """(subject, html, text) for one team member's combined email."""
+                unsub_links: dict[int, str] | None, images: dict | None = None) -> tuple[str, str, str]:
+    """(subject, html, text) for one team member's combined email. `images` come from embed_feed_images."""
     sections = []
     for feed in feeds:
         stories = []
         for match in feed.matches:
             item = feed.items[match.item_id]
+            picture = (images or {}).get(feed.client_id, {}).get(match.item_id)
             stories.append(
                 mail.StoryLine(
                     title=item["title"],
@@ -235,6 +238,9 @@ def message_for(cfg: Config, settings: PersonalSettings, feeds: list[Feed], *, n
                     reasons=match.reasons,
                     badge=match.content_type,
                     strategic=match.strategic,
+                    image_cid=picture[0].cid if picture else None,
+                    image_width=picture[1] if picture else 0,
+                    image_height=picture[0].display_height(picture[1]) if picture else 0,
                 )
             )
         sections.append(
@@ -293,6 +299,7 @@ def run_weekly(cfg: Config, conn: sqlite3.Connection, *, now: datetime | None = 
 
     report.feeds = build_feeds(cfg, conn, settings, now, test=test)
     resolve_feed_links(conn, report.feeds)
+    pictures = embed_feed_images(cfg, conn, report.feeds, run_key="test" if test else now.date().isoformat())
     feeds_with_news = [feed for feed in report.feeds if feed.matches]
     if not report.feeds:
         log.info("No client has its feed day today")
@@ -324,27 +331,28 @@ def run_weekly(cfg: Config, conn: sqlite3.Connection, *, now: datetime | None = 
         unsub = None if test else {
             feed.client_id: f"{base}/u/{store.unsubscribe_token(conn, feed.client_id, address)}" for feed in feeds
         }
-        subject, html_body, text_body = message_for(cfg, settings, feeds, now=now, unsub_links=unsub)
+        subject, html_body, text_body = message_for(cfg, settings, feeds, now=now, unsub_links=unsub, images=pictures)
         findings = gate.scan_email(subject, html_body, text_body)
         if any(finding.is_error for finding in findings):
             report.skipped.append((address, "the security layer blocked this email; see the log"))
             log.error("Security: the personal email to %s was not sent: %s", address,
                       "; ".join(f.message for f in findings if f.is_error))
             continue
-        messages.append((address, (profile.subject(subject), html_body, text_body)))
+        inline = {**mail.logo_inline(cfg), **inline_for(feeds, pictures)}
+        messages.append((address, (profile.subject(subject), html_body, text_body, inline)))
 
     if transport is None:
         transport = profile.transport()
     delay = cfg.security.sending.delay_seconds
     try:
         with transport:
-            for index, (address, (subject, html_body, text_body)) in enumerate(messages):
+            for index, (address, (subject, html_body, text_body, inline)) in enumerate(messages):
                 if index and delay:
                     time.sleep(delay)
                 if run_id is not None:
                     store.mark_delivery(conn, run_id, address, "sending", now)
                 try:
-                    transport.send(_message(profile, cfg, subject, html_body, text_body, address))
+                    transport.send(_message(profile, cfg, subject, html_body, text_body, address, inline))
                 except RecipientRejected as exc:
                     _failed(conn, run_id, report, address, exc, now)
                     continue
@@ -396,12 +404,64 @@ def resolve_feed_links(conn: sqlite3.Connection, feeds: list[Feed]) -> None:
                 feed.items[item_id] = {**feed.items[item_id], "url": url}
 
 
+class _StoryRef:
+    """What the picture and summary helpers need from a story."""
+
+    def __init__(self, item_id: int, url: str, image_url: str | None, excerpt: str) -> None:
+        self.item_id, self.url, self.image_url, self.excerpt = item_id, url, image_url, excerpt
+
+
+def embed_feed_images(cfg: Config, conn: sqlite3.Connection, feeds: list[Feed], *, run_key: str) -> dict:
+    """Fills in missing pictures and summaries from the article pages (as the general brief does), stores them, then
+    downloads and converts each client's pictures. Returns {client_id: {item_id: (EmbeddedImage, display_width)}}.
+    The first strategic story of each client gets the large lead picture; the others get thumbnails."""
+    refs: dict[int, _StoryRef] = {}
+    for feed in feeds:
+        for match in feed.matches:
+            item = feed.items[match.item_id]
+            refs.setdefault(match.item_id, _StoryRef(match.item_id, item["url"], item.get("image_url"), item["excerpt"] or ""))
+    if refs:
+        updates = enrich.fill_missing_details(list(refs.values()), cfg.fetch.user_agent)
+        if updates:
+            db.update_items(conn, updates)
+            for feed in feeds:
+                for item_id, fields in updates.items():
+                    if item_id in feed.items:
+                        feed.items[item_id] = {**feed.items[item_id], **fields}
+
+    pictures: dict = {}
+    base = cfg.data_dir / "personal" / "images" / run_key
+    for feed in feeds:
+        if not feed.matches:
+            continue
+        lead = next((match.item_id for match in feed.matches if match.strategic), None)
+        stories = [_StoryRef(match.item_id, "", feed.items[match.item_id].get("image_url"), "") for match in feed.matches]
+        embedded = story_images.embed_story_images(stories, lead, base / f"client-{feed.client_id}", cfg.fetch.user_agent)
+        per_client = {}
+        for item_id, image in embedded.items():
+            width = story_images.LEAD_WIDTH if item_id == lead else story_images.THUMB_WIDTH
+            # A distinct Content-ID per client: the same story can be a lead for one client and a thumbnail for another.
+            per_client[item_id] = (replace(image, cid=f"story-{item_id}-c{feed.client_id}"), width)
+        pictures[feed.client_id] = per_client
+    return pictures
+
+
+def inline_for(feeds: list[Feed], pictures: dict | None) -> dict[str, Path]:
+    """The picture files to attach to one team member's email, keyed by Content-ID."""
+    inline: dict[str, Path] = {}
+    for feed in feeds:
+        for image, _width in (pictures or {}).get(feed.client_id, {}).values():
+            inline[image.cid] = image.path
+    return inline
+
+
 def _record(conn: sqlite3.Connection, run_id: int, report: Report, now: datetime, feeds: list[Feed]) -> None:
     for feed in feeds:
         store.record_issue(conn, run_id, feed.client_id, feed.window_start, feed.window_end, feed.matches, now)
 
 
-def _message(profile: MailProfile, cfg: Config, subject: str, html_body: str, text_body: str, recipient: str):
+def _message(profile: MailProfile, cfg: Config, subject: str, html_body: str, text_body: str, recipient: str,
+             inline: dict | None = None):
     sending = cfg.security.sending
     return build_message(
         subject=subject,
@@ -410,7 +470,7 @@ def _message(profile: MailProfile, cfg: Config, subject: str, html_body: str, te
         sender=profile.sender,
         sender_name=PERSONAL_NAME,
         recipient=recipient,
-        inline_images=mail.logo_inline(cfg),
+        inline_images=inline if inline is not None else mail.logo_inline(cfg),
         reply_to=profile.reply_to,
         unsubscribe_mailbox=(sending.unsubscribe_mailbox or profile.reply_to or profile.sender) if sending.list_unsubscribe else None,
     )

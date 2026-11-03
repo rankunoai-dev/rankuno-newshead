@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from jinja2 import Environment, FileSystemLoader, StrictUndefined
+
 from ..config import Config
 
 RED, CHARCOAL, GREY = "#DF212A", "#262626", "#707070"
@@ -26,6 +28,9 @@ class StoryLine:
     reasons: tuple[str, ...]
     badge: str = "editorial"  # editorial | sponsored | vendor
     strategic: bool = True  # a direct client or competitor match, rather than industry context
+    image_cid: str | None = None  # the story picture, embedded as this Content-ID
+    image_width: int = 0  # display width in pixels: 568 for a lead picture, 150 for a thumbnail
+    image_height: int = 0
 
 
 @dataclass(frozen=True)
@@ -77,110 +82,107 @@ def _plural(count: int, word: str) -> str:
 
 
 BADGES = {
-    "editorial": ("Editorial", "#262626"),
+    "editorial": ("Editorial", "#707070"),
     "sponsored": ("Sponsored", "#8A6D00"),
     "vendor": ("Vendor report", "#1F4E79"),
 }
+_TEMPLATE = "personal_email.html.j2"
+
+
+def _story_view(story: StoryLine, cfg: Config, client_name: str) -> dict:
+    label, color = BADGES.get(story.badge, BADGES["editorial"])
+    relevance = " · ".join(story.reasons[:4]) or "general industry news"
+    why = (f"Why it matters to {client_name}: direct match on {relevance}." if story.strategic
+           else f"Industry context: {relevance}.")
+    return {
+        "title": story.title,
+        "url": story.url,
+        "source": story.source,
+        "date": _date(story.published, cfg),
+        "excerpt": _summary(story.excerpt),
+        "badge_label": label,
+        "badge_color": color,
+        "why": why,
+        "image_src": f"cid:{story.image_cid}" if story.image_cid else None,
+        "image_width": story.image_width or 150,
+        "image_height": story.image_height or None,
+    }
+
+
+def _environment(cfg: Config) -> Environment:
+    return Environment(
+        loader=FileSystemLoader(cfg.templates_dir),
+        autoescape=lambda name: bool(name) and name.endswith(".html.j2"),
+        undefined=StrictUndefined,
+        trim_blocks=True,
+        lstrip_blocks=True,
+    )
 
 
 def weekly_email(cfg: Config, run_day: datetime, sections: list[ClientSection]) -> tuple[str, str]:
-    """Returns (html, text). Logo: the white logo, embedded as cid:logo_white."""
+    """Returns (html, text). Images are referenced as cid: parts that the sender attaches (see feed.inline_images)."""
     total = sum(len(section.stories) for section in sections)
     week = _date(run_day, cfg)
     names = [section.client_name for section in sections]
     intro_text = (
-        f"This edition covers {_plural(len(sections), 'client')} and {_plural(total, 'story')}, "
-        f"published in the seven days to {week}. Each story is checked for relevance to the client's "
-        "industry, competitors and keywords. Sponsored and vendor pieces are labelled."
+        f"This edition covers {_plural(len(sections), 'client')} and {_plural(total, 'story')}, published in the seven "
+        f"days to {week}. Each story is checked for relevance to the client's industry, competitors and keywords. "
+        "Sponsored and vendor pieces are labelled."
     )
-
-    overview = "".join(
-        f"""<tr><td style="padding:9px 0;border-bottom:1px solid #E6E6E6;font-family:{FONT};font-size:14px;color:{CHARCOAL};">{_e(section.client_name)}</td>
-<td align="right" style="padding:9px 0;border-bottom:1px solid #E6E6E6;font-family:{FONT};font-size:13px;color:{GREY};">{_plural(len(section.stories), 'story').replace(' ', '&nbsp;')}</td></tr>"""
-        for section in sections
-    )
-    blocks = [f"""<tr><td style="padding:24px 32px 6px 32px;font-family:{FONT};">
-  <div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:{RED};font-weight:bold;">In this edition</div>
-  <p style="margin:8px 0 14px 0;font-size:14px;line-height:22px;color:{CHARCOAL};">{_e(intro_text)}</p>
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0">{overview}</table>
-</td></tr>"""]
-    text_parts = [PERSONAL_NAME, f"Week of {week}", "", "IN THIS EDITION", intro_text, ""]
-    text_parts += [f"  {section.client_name}: {_plural(len(section.stories), 'story')}" for section in sections] + [""]
-
+    clients = []
     for section in sections:
         themes = _themes(section.stories)
-        theme_line = " · ".join(themes) if themes else "none this week"
-        blocks.append(f"""<tr><td style="padding:26px 32px 4px 32px;border-top:2px solid {CHARCOAL};font-family:{FONT};">
-  <div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:{RED};font-weight:bold;">{_e(' · '.join(section.industries))}</div>
-  <div style="font-size:20px;font-weight:bold;color:{CHARCOAL};margin-top:4px;">{_e(section.client_name)}</div>
-  <div style="font-size:13px;color:{GREY};margin-top:6px;">Key themes: {_e(theme_line)}</div>
-</td></tr>""")
-        text_parts += [section.client_name.upper(), "-" * len(section.client_name)]
-        if themes:
-            text_parts += [f"Key themes: {theme_line}", ""]
-        if not section.stories:
-            blocks.append(f'<tr><td style="padding:14px 32px;font-family:{FONT};font-size:14px;color:{GREY};">No matching developments this week.</td></tr>')
-            text_parts += ["No matching developments this week.", ""]
+        clients.append({
+            "name": section.client_name,
+            "industries": " · ".join(section.industries),
+            "themes": " · ".join(themes) if themes else "none this week",
+            "unsubscribe_url": section.unsubscribe_url,
+            "strategic": [_story_view(story, cfg, section.client_name) for story in section.stories if story.strategic],
+            "industry": [_story_view(story, cfg, section.client_name) for story in section.stories if not story.strategic],
+        })
+    preheader = f"{_plural(total, 'story')} for {', '.join(names[:3])}{' and others' if len(names) > 3 else ''}, week of {week}."
+    html_body = _environment(cfg).get_template(_TEMPLATE).render(
+        title=PERSONAL_NAME,
+        week=week,
+        preheader=preheader,
+        intro=intro_text,
+        coverage=f"{_plural(len(sections), 'client')} · {_plural(total, 'story')}",
+        toc=[{"name": section.client_name, "count": _plural(len(section.stories), "story")} for section in sections],
+        clients=clients,
+        logo="cid:logo",
+        logo_white="cid:logo_white",
+        website_url=cfg.newsletter.website_url,
+        brand_tagline=cfg.newsletter.brand_tagline,
+    )
+    return html_body, _text_version(cfg, week, intro_text, sections)
 
-        groups = (
+
+def _text_version(cfg: Config, week: str, intro_text: str, sections: list[ClientSection]) -> str:
+    parts = [PERSONAL_NAME, f"Week of {week}", "", "IN THIS EDITION", intro_text, ""]
+    parts += [f"  {section.client_name}: {_plural(len(section.stories), 'story')}" for section in sections] + [""]
+    for section in sections:
+        themes = _themes(section.stories)
+        parts += [section.client_name.upper(), "-" * len(section.client_name)]
+        parts += [f"Key themes: {' · '.join(themes)}", ""] if themes else []
+        if not section.stories:
+            parts += ["No matching developments this week.", ""]
+        for group_title, stories in (
             ("Strategic client & market moves", [story for story in section.stories if story.strategic]),
             ("Industry & vendor intelligence", [story for story in section.stories if not story.strategic]),
-        )
-        for group_title, stories in groups:
+        ):
             if not stories:
                 continue
-            blocks.append(f"""<tr><td style="padding:16px 32px 2px 32px;font-family:{FONT};font-size:11px;letter-spacing:1.2px;text-transform:uppercase;color:{CHARCOAL};font-weight:bold;">{_e(group_title)}</td></tr>""")
-            text_parts += [group_title.upper(), ""]
+            parts += [group_title.upper(), ""]
             for story in stories:
-                label, color = BADGES.get(story.badge, BADGES["editorial"])
-                summary = _summary(story.excerpt)
-                relevance = " · ".join(story.reasons[:4]) or "general industry news"
-                why = (f"Why it matters to {section.client_name}: direct match on {relevance}." if story.strategic
-                       else f"Industry context: {relevance}.")
-                badge_html = (f'<span style="display:inline-block;font-size:10px;letter-spacing:1px;text-transform:uppercase;'
-                              f'color:#FFFFFF;background:{color};padding:2px 7px;margin-right:8px;">{_e(label)}</span>')
-                summary_html = (f'<div style="font-size:14px;line-height:22px;color:{CHARCOAL};">{_e(summary)}</div>' if summary else "")
-                blocks.append(f"""<tr><td style="padding:16px 32px;border-top:1px solid #E6E6E6;font-family:{FONT};">
-  <div style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:{GREY};">{badge_html}{_e(story.source)} &nbsp;·&nbsp; {_date(story.published, cfg)}</div>
-  <a href="{_e(story.url)}" style="display:block;font-size:17px;line-height:23px;font-weight:bold;color:{CHARCOAL};text-decoration:none;margin:6px 0 8px 0;">{_e(story.title)}</a>
-  {summary_html}
-  <div style="font-size:12px;line-height:18px;color:{GREY};margin-top:10px;">{_e(why)}</div>
-  <div style="margin-top:8px;"><a href="{_e(story.url)}" style="font-size:13px;color:{RED};font-weight:bold;text-decoration:none;">Read the full article &rarr;</a></div>
-</td></tr>""")
-                text_parts += [
-                    f"[{label.upper()}] {story.title}", f"{story.source} · {_date(story.published, cfg)}",
-                    *([summary] if summary else []), why, f"Read the full article: {story.url}", "",
-                ]
-        footer_links = ""
+                label, _ = BADGES.get(story.badge, BADGES["editorial"])
+                view = _story_view(story, cfg, section.client_name)
+                parts += [f"[{label.upper()}] {story.title}", f"{story.source} · {view['date']}"]
+                parts += [view["excerpt"]] if view["excerpt"] else []
+                parts += [view["why"], f"Read the full article: {story.url}", ""]
         if section.unsubscribe_url:
-            footer_links = (f'<a href="{_e(section.unsubscribe_url)}" style="color:{GREY};text-decoration:underline;">'
-                            f"Stop receiving {_e(section.client_name)} news</a>")
-            text_parts += [f"Stop receiving {section.client_name} news: {section.unsubscribe_url}", ""]
-        blocks.append(f'<tr><td style="padding:12px 32px 22px 32px;font-family:{FONT};font-size:12px;">{footer_links}</td></tr>')
-
-    preheader = f"{_plural(total, 'story')} for {', '.join(names[:3])}{' and others' if len(names) > 3 else ''}, week of {week}."
-    html_body = f"""<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{_e(PERSONAL_NAME)}</title></head>
-<body style="margin:0;padding:0;background:#F2F2F2;">
-<div style="display:none;max-height:0;overflow:hidden;opacity:0;">{_e(preheader)}</div>
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F2F2F2;"><tr><td align="center" style="padding:24px 8px;">
-<table role="presentation" width="640" cellpadding="0" cellspacing="0" style="width:640px;max-width:640px;background:#FFFFFF;border:1px solid #E6E6E6;">
-<tr><td style="background:{RED};padding:22px 32px;font-family:{FONT};color:#FFFFFF;">
-  <img src="cid:logo_white" alt="RankUno" height="30" style="display:block;border:0;" />
-  <div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;margin-top:16px;">Weekly client intelligence</div>
-  <div style="font-size:22px;font-weight:bold;margin-top:4px;">{_e(PERSONAL_NAME)}</div>
-  <div style="font-size:13px;margin-top:4px;">Week of {_e(week)}</div>
-</td></tr>
-{''.join(blocks)}
-<tr><td style="padding:18px 32px;background:#F7F7F7;border-top:1px solid #E6E6E6;font-family:{FONT};font-size:11px;line-height:17px;color:{GREY};">
-  Prepared for internal client planning within RankUno. Stories are drawn from public sources; each links to the original article.
-  Questions about this brief can go to your account manager.
-</td></tr>
-</table>
-</td></tr></table>
-</body></html>"""
-    text_parts += ["Prepared for internal client planning within RankUno. Stories link to their original articles."]
-    return html_body, "\n".join(text_parts)
+            parts += [f"Stop receiving {section.client_name} news: {section.unsubscribe_url}", ""]
+    parts += ["Prepared for internal client planning within RankUno. Stories link to their original articles."]
+    return "\n".join(parts)
 
 
 def invite_subject(cfg: Config) -> str:
@@ -257,7 +259,7 @@ def invite_email(cfg: Config, name: str, link: str, days: int) -> tuple[str, str
 
 
 def logo_inline(cfg: Config) -> dict[str, Path]:
-    return {"logo_white": cfg.root / cfg.newsletter.logo_white_path}
+    return {"logo": cfg.root / cfg.newsletter.logo_path, "logo_white": cfg.root / cfg.newsletter.logo_white_path}
 
 
 def notice(cfg: Config, *, subject: str, heading: str, paragraphs: list[str],

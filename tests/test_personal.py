@@ -274,7 +274,7 @@ def test_weekly_run_sends_one_email_per_person_with_unsubscribe(pconn, cfg, week
     assert "GEP launches new procurement suite" in body
     assert "Chip" not in body
     assert "https://brief.example.com/u/" in body
-    assert "Reuters" in body
+    assert "REUTERS" in body  # the source is set in capitals, as in the general brief
 
 
 def test_a_run_cannot_repeat_for_the_same_date(pconn, cfg, weekly):
@@ -950,7 +950,8 @@ def test_each_client_section_splits_strategic_from_industry_stories(cfg):
                               "", ("yard management",), "vendor", False)
     section = mail.ClientSection("GEP", ("Supply chain",), (strategic, industry), None)
     html_body, text_body = mail.weekly_email(cfg, NOW, [section])
-    assert "Strategic client &amp; market moves" in html_body
-    assert "Industry &amp; vendor intelligence" in html_body
-    assert "Vendor report" in html_body and "Why it matters to GEP" in html_body
+    assert "STRATEGIC CLIENT &amp; MARKET MOVES" in html_body
+    assert "INDUSTRY &amp; VENDOR INTELLIGENCE" in html_body
+    assert "STRATEGIC CLIENT & MARKET MOVES" in text_body
+    assert "VENDOR REPORT" in html_body and "Why it matters to GEP" in html_body
     assert "[VENDOR REPORT]" in text_body

@@ -483,7 +483,8 @@ Ask an admin to send you a new one.</p>""")
         logo = mail.logo_inline(self.cfg)["logo_white"]
         if logo.is_file():
             data = base64.b64encode(logo.read_bytes()).decode("ascii")
-            body_html = body_html.replace('"cid:logo_white"', f'"data:image/png;base64,{data}"')
+            for cid in ('"cid:logo"', '"cid:logo_white"'):
+                body_html = body_html.replace(cid, f'"data:image/png;base64,{data}"')
         payload = body_html.encode("utf-8")
         handler.send_response(200)
         handler.send_header("Content-Type", "text/html; charset=utf-8")
