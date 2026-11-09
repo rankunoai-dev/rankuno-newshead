@@ -15,37 +15,6 @@ feed:
   session_days: 14        # manager sign-in lasts this long
   invite_days: 7          # an invitation link works this long
 
-# Keyword tiers, applied to every client. A client's own keywords are core unless they appear in the lists below.
-# core: strategic topics (weight 4). operational: operating topics (weight 2). broad: context words (weight 1);
-# a broad word counts only when at least two match and one of them is in the headline.
-core_terms:
-  - direct sourcing
-  - strategic sourcing
-  - procurement automation
-  - procure-to-pay
-  - source-to-pay
-  - contract lifecycle management
-  - spend analytics
-  - e-procurement
-  - supplier risk management
-operational_terms:
-  - yard management
-  - yard-management
-  - freight visibility
-  - continuous optimization
-  - decision intelligence
-  - warehouse automation
-  - supplier onboarding
-broad_terms:
-  - supply chain
-  - logistics
-  - spend management
-  - procurement
-  - sourcing
-  - inventory management
-  - purchase order
-  - paperwork
-
 industries:
   - id: supply_chain_procurement
     title: Supply chain & procurement
@@ -53,6 +22,11 @@ industries:
                supplier management, logistics, inventory management, e-procurement, purchase order]
     competitors: [Coupa, SAP Ariba, Jaggaer, Ivalua, Zycus, Basware, Oracle Fusion Procurement]
     keywords_default: [procurement software, supply chain software, spend analytics]
+    # Keyword tiers for this industry only. core: strategic topics (weight 4); operational: operating topics (weight 2);
+    # broad: context words (weight 1), counted only when two match and one is in the headline.
+    core_terms: [direct sourcing, strategic sourcing, procurement automation, procure-to-pay, source-to-pay, contract lifecycle management, spend analytics, e-procurement, supplier risk management]
+    operational_terms: [yard management, yard-management, freight visibility, continuous optimization, decision intelligence, warehouse automation, supplier onboarding]
+    broad_terms: [supply chain, logistics, spend management, procurement, sourcing, inventory management, purchase order, paperwork]
 
   - id: bfsi
     title: Banking, financial services & insurance

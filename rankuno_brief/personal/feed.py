@@ -105,8 +105,12 @@ def build_feeds(
 
 def tiered_keywords(client_keywords, industries, settings) -> tuple[tuple, tuple, tuple]:
     """(core, operational, broad) keywords for one client. Core wins over operational, and operational over broad."""
-    operational_list = {term.lower() for term in settings.operational_terms}
-    broad_list = {term.lower() for term in settings.broad_terms}
+    own = [settings.industry(i) for i in industries if settings.industry(i) is not None]
+    core_terms = [term for industry in own for term in industry.core_terms]
+    operational_terms = [term for industry in own for term in industry.operational_terms]
+    broad_terms = [term for industry in own for term in industry.broad_terms]
+    operational_list = {term.lower() for term in operational_terms}
+    broad_list = {term.lower() for term in broad_terms}
     core: dict[str, str] = {}
     operational: dict[str, str] = {}
     broad: dict[str, str] = {}
@@ -122,11 +126,11 @@ def tiered_keywords(client_keywords, industries, settings) -> tuple[tuple, tuple
             add(broad, keyword)
         else:
             add(core, keyword)
-    for keyword in settings.core_terms:
+    for keyword in core_terms:
         add(core, keyword)
-    for keyword in settings.operational_terms:
+    for keyword in operational_terms:
         add(operational, keyword)
-    for keyword in [*settings.broad_terms, *industry_terms(industries, settings)]:
+    for keyword in [*broad_terms, *industry_terms(industries, settings)]:
         add(broad, keyword)
     for key in list(operational):
         if key in core:

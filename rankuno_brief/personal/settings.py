@@ -25,6 +25,9 @@ class Industry:
     keywords: tuple[str, ...]
     competitors: tuple[str, ...]  # suggestions only
     keywords_default: tuple[str, ...]  # suggestions only
+    core_terms: tuple[str, ...] = ()  # strategic topics of this industry only (weight 4)
+    operational_terms: tuple[str, ...] = ()  # operating topics of this industry only (weight 2)
+    broad_terms: tuple[str, ...] = ()  # context words of this industry only (weight 1)
 
 
 @dataclass(frozen=True)
@@ -38,10 +41,6 @@ class PersonalSettings:
     run_time: time
     session_days: int
     invite_days: int
-    core_terms: tuple[str, ...] = ()
-    operational_terms: tuple[str, ...] = ()
-    broad_terms: tuple[str, ...] = ()
-
     def industry(self, industry_id: str) -> Industry | None:
         return self.industries.get(industry_id)
 
@@ -60,6 +59,9 @@ def load_settings(root: Path) -> PersonalSettings:
             keywords=tuple(entry.get("keywords") or ()),
             competitors=tuple(entry.get("competitors") or ()),
             keywords_default=tuple(entry.get("keywords_default") or ()),
+            core_terms=tuple(str(term) for term in entry.get("core_terms") or ()),
+            operational_terms=tuple(str(term) for term in entry.get("operational_terms") or ()),
+            broad_terms=tuple(str(term) for term in entry.get("broad_terms") or ()),
         )
         if industry.id in industries:
             raise ConfigError(f"Duplicate industry id in personal.yaml: {industry.id}")
@@ -81,9 +83,6 @@ def load_settings(root: Path) -> PersonalSettings:
         run_time=time(hour, minute),
         session_days=int(feed.get("session_days", 14)),
         invite_days=int(feed.get("invite_days", 7)),
-        core_terms=tuple(str(term) for term in raw.get("core_terms") or ()),
-        operational_terms=tuple(str(term) for term in raw.get("operational_terms") or ()),
-        broad_terms=tuple(str(term) for term in raw.get("broad_terms") or ()),
     )
 
 

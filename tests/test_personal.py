@@ -117,8 +117,8 @@ def test_blank_optional_fields_are_prefilled_and_marked_as_suggestions(settings)
         fields(client_name="GEP", industries=["supply_chain_procurement"]), settings, is_new=True
     )
     assert not errors
-    assert "competitors" in data["suggested"] and "keywords" in data["suggested"]
-    assert any(c["name"] == "Coupa" for c in data["competitors"])
+    assert "keywords" in data["suggested"] and "competitors" not in data["suggested"]
+    assert data["competitors"] == []  # competitors are never pre-filled: the manager names them
 
 
 def test_filled_fields_are_not_prefilled(settings):
@@ -451,7 +451,7 @@ def test_sign_in_flow_and_client_form(monkeypatch, web_db):
     client_id = int(saved.header("Location").split("/")[3].split("?")[0])
     row = store.client(pconn, client_id)
     assert row["manager_id"] == person and row["status"] == "draft"
-    assert "competitors" in store.client_suggested(row)
+    assert "keywords" in store.client_suggested(row)
 
     # Not active yet: suggestions unreviewed.
     activate = up.urlencode([("csrf", csrf), ("client_name", "GEP"), ("industries", "supply_chain_procurement"),
@@ -938,7 +938,8 @@ def test_content_type_is_detected_from_url_and_wording():
 
 
 def test_client_keywords_are_placed_in_the_right_tier(settings):
-    core, operational, broad = feed.tiered_keywords(("spend management", "direct sourcing", "yard management"), (), settings)
+    core, operational, broad = feed.tiered_keywords(("spend management", "direct sourcing", "yard management"),
+                                                    ("supply_chain_procurement",), settings)
     assert "spend management" in broad and "spend management" not in core
     assert "direct sourcing" in core
     assert "yard management" in operational
@@ -1088,3 +1089,24 @@ def test_client_searches_are_fetched_separately_and_stay_out_of_the_general_brie
     client_news.fetch_client_news(cfg, pconn)
     assert seen["sources"] == [f"client-news-{client}"]
     assert all(source.id.startswith("client-news-") is False for source in cfg.sources if source.personal_only is False)
+
+
+def test_a_competitor_or_keyword_of_one_client_never_reaches_another(settings):
+    from rankuno_brief.personal import feed as feed_module
+
+    # A banking client: no procurement tiers, and no procurement competitor.
+    core, operational, broad = feed_module.tiered_keywords((), ("bfsi",), settings)
+    assert "direct sourcing" not in core and "yard management" not in operational and "spend management" not in broad
+    banking = feed_module.client_terms(
+        {"client_name": "HighRadius", "aliases_json": "[]", "competitors_json": "[]",
+         "keywords_json": "[]", "industries_json": '["bfsi"]', "excludes_json": "[]"}, settings)
+    assert banking.competitors == ()
+    # A procurement client with Coupa as its competitor: Coupa is in its terms only.
+    gep = feed_module.client_terms(
+        {"client_name": "GEP", "aliases_json": "[]", "competitors_json": '[{"name": "Coupa", "website": ""}]',
+         "keywords_json": "[]", "industries_json": '["supply_chain_procurement"]', "excludes_json": "[]"}, settings)
+    assert gep.competitors == ("Coupa",)
+    coupa_story = {"id": 9, "title": "Coupa expands its AI roadmap", "excerpt": "", "publisher": None,
+                   "url": "https://x.example/9", "source_id": "s", "published_at": db.to_iso(NOW)}
+    assert matching.score_item(coupa_story, banking, 1.5) is None
+    assert matching.score_item(coupa_story, gep, 1.5) is not None

@@ -103,11 +103,7 @@ def parse_form(
     suggested: list[str] = []
     if is_new:
         # Pre-fill only when the manager left the field blank, and only on first save.
-        if not competitors:
-            defaults = _industry_values(industries, settings, "competitors")
-            competitors = [{"name": value, "website": ""} for value in defaults[:MAX_COMPETITORS]]
-            if competitors:
-                suggested.append(COMPETITORS_FIELD)
+        # Competitors are never pre-filled: they are specific to each client, so the manager names them.
         if not keywords:
             keywords = _industry_values(industries, settings, "keywords_default")[:MAX_KEYWORDS]
             if keywords:
