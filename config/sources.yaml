@@ -442,3 +442,18 @@ sources:
     query: '("order-to-cash" OR "accounts receivable automation" OR "cash forecasting" OR "credit-to-cash" OR "autonomous finance")'
     section: martech_analytics
     personal_only: true
+
+# Magazines and forums for the client feeds only (personal_only: true). The general brief never uses these.
+  - id: trade-inbound-logistics
+    name: "Inbound Logistics"
+    url: https://www.inboundlogistics.com/rss
+    section: martech_analytics
+    personal_only: true
+
+  - id: forum-reddit-procurement
+    name: "Reddit: r/procurement"
+    type: reddit
+    url: https://www.reddit.com/r/procurement/top/.rss?t=week
+    section: community
+    community: true
+    personal_only: true

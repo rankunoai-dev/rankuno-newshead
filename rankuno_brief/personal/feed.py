@@ -28,7 +28,7 @@ from ..mailer import MailError, RecipientRejected, build_message
 from ..security.content import gate_for
 from ..security.dns import DnsResolver
 from ..security.recipients import check_recipients
-from . import mail, matching, store
+from . import analysis, articles, mail, matching, store
 from . import profiles
 from .profiles import custom_keywords, industry_terms
 from .settings import PersonalSettings, cached_settings, personal_sending_enabled, public_base_url
@@ -137,17 +137,13 @@ def tiered_keywords(client_keywords, industries, settings) -> tuple[tuple, tuple
     return tuple(core.values()), tuple(operational.values()), tuple(broad.values())
 
 
-def build_one(conn: sqlite3.Connection, settings: PersonalSettings, pool: list[dict], client: sqlite3.Row,
-              now: datetime, *, dedupe: bool) -> Feed:
-    """One client's feed from the screened news pool. `dedupe` skips stories this client already received."""
-    earliest = now - timedelta(days=settings.window_days)
-    activated = db.from_iso(client["activated_at"]) if client["activated_at"] else earliest
-    window_start = max(earliest, activated)
+def client_terms(client: sqlite3.Row, settings: PersonalSettings) -> matching.Terms:
+    """The matching terms of one client: names, competitors and the three keyword tiers."""
     core, operational, broad = tiered_keywords(
         tuple(_json(client["keywords_json"])) + custom_keywords(client_industries(client)),
         client_industries(client), settings,
     )
-    terms = matching.Terms(
+    return matching.Terms(
         names=(client["client_name"], *_json(client["aliases_json"])),
         competitors=tuple(entry["name"] for entry in _json(client["competitors_json"])),
         core=core,
@@ -155,6 +151,61 @@ def build_one(conn: sqlite3.Connection, settings: PersonalSettings, pool: list[d
         broad=broad,
         excludes=tuple(_json(client["excludes_json"])),
     )
+
+
+def resolve_candidate_links(conn: sqlite3.Connection, items: list[dict]) -> None:
+    """Google News redirect links among the articles to read are replaced with the publisher's address first."""
+    links = [_Link(item["id"], item["url"]) for item in items if google_news.is_google_news_link(item["url"])]
+    if not links:
+        return
+    resolved = google_news.resolve_links(links)
+    if not resolved:
+        return
+    db.update_items(conn, {item_id: {"url": url} for item_id, url in resolved.items()})
+    for item in items:
+        if item["id"] in resolved:
+            item["url"] = resolved[item["id"]]
+
+
+def analyse_feeds(cfg: Config, conn: sqlite3.Connection, settings: PersonalSettings, feeds: list[Feed],
+                  pool: list[dict], now: datetime, *, fetch: bool) -> tuple[dict, dict]:
+    """Key takeaways and suggested actions for each matched story, and mentions and competitor watch for each client.
+    `fetch` reads articles not yet cached; without it only cached article text is used (previews)."""
+    clients = {feed.client_id: (feed.client, client_terms(feed.client, settings), feed.client["website"] or "")
+               for feed in feeds}
+    if not clients:
+        return {}, {}
+    wanted = analysis.candidates(pool, clients)
+    if fetch:
+        resolve_candidate_links(conn, wanted)
+        read = articles.ensure(conn, wanted, now=now, user_agent=cfg.fetch.user_agent)
+    else:
+        read = articles.cached(conn, [item["id"] for item in wanted], now)
+    findings = analysis.scan(clients, wanted, read)
+    notes: dict = {}
+    for feed in feeds:
+        terms = clients[feed.client_id][1]
+        per_item = {}
+        for match in feed.matches:
+            item = feed.items[match.item_id]
+            article = read.get(match.item_id)
+            source_text = article.body if article and article.body else (item["excerpt"] or "")
+            per_item[match.item_id] = (
+                analysis.takeaways(source_text, terms) or analysis.takeaways(item["excerpt"] or "", terms),
+                analysis.suggested_actions(item["title"], source_text, terms,
+                                           content_type=match.content_type, strategic=match.strategic),
+            )
+        notes[feed.client_id] = per_item
+    return notes, findings
+
+
+def build_one(conn: sqlite3.Connection, settings: PersonalSettings, pool: list[dict], client: sqlite3.Row,
+              now: datetime, *, dedupe: bool) -> Feed:
+    """One client's feed from the screened news pool. `dedupe` skips stories this client already received."""
+    earliest = now - timedelta(days=settings.window_days)
+    activated = db.from_iso(client["activated_at"]) if client["activated_at"] else earliest
+    window_start = max(earliest, activated)
+    terms = client_terms(client, settings)
     candidates = [item for item in pool if db.from_iso(item["published_at"]) >= window_start]
     featured = store.already_featured_item_ids(conn, client["id"]) if dedupe else set()
     matches = matching.rank(
@@ -220,7 +271,8 @@ def plan_recipients(
 
 
 def message_for(cfg: Config, settings: PersonalSettings, feeds: list[Feed], *, now: datetime,
-                unsub_links: dict[int, str] | None, images: dict | None = None) -> tuple[str, str, str]:
+                unsub_links: dict[int, str] | None, images: dict | None = None,
+                notes: dict | None = None, findings: dict | None = None) -> tuple[str, str, str]:
     """(subject, html, text) for one team member's combined email. `images` come from embed_feed_images."""
     sections = []
     for feed in feeds:
@@ -228,6 +280,7 @@ def message_for(cfg: Config, settings: PersonalSettings, feeds: list[Feed], *, n
         for match in feed.matches:
             item = feed.items[match.item_id]
             picture = (images or {}).get(feed.client_id, {}).get(match.item_id)
+            takeaways, actions = (notes or {}).get(feed.client_id, {}).get(match.item_id, ((), ()))
             stories.append(
                 mail.StoryLine(
                     title=item["title"],
@@ -238,6 +291,8 @@ def message_for(cfg: Config, settings: PersonalSettings, feeds: list[Feed], *, n
                     reasons=match.reasons,
                     badge=match.content_type,
                     strategic=match.strategic,
+                    takeaways=tuple(takeaways),
+                    actions=tuple(actions),
                     image_cid=picture[0].cid if picture else None,
                     image_width=picture[1] if picture else 0,
                     image_height=picture[0].display_height(picture[1]) if picture else 0,
@@ -249,6 +304,8 @@ def message_for(cfg: Config, settings: PersonalSettings, feeds: list[Feed], *, n
                 industries=tuple(_industry_title(settings, industry) for industry in client_industries(feed.client)),
                 stories=tuple(stories),
                 unsubscribe_url=(unsub_links or {}).get(feed.client_id),
+                mentions=tuple((findings or {}).get(feed.client_id, analysis.ClientFindings()).mentions),
+                competitor_watch=tuple((findings or {}).get(feed.client_id, analysis.ClientFindings()).competitor_watch),
             )
         )
     html_body, text_body = mail.weekly_email(cfg, now, sections)
@@ -300,6 +357,8 @@ def run_weekly(cfg: Config, conn: sqlite3.Connection, *, now: datetime | None = 
     report.feeds = build_feeds(cfg, conn, settings, now, test=test)
     resolve_feed_links(conn, report.feeds)
     pictures = embed_feed_images(cfg, conn, report.feeds, run_key="test" if test else now.date().isoformat())
+    pool = screened_news(cfg, conn, now - timedelta(days=settings.window_days))
+    notes, findings = analyse_feeds(cfg, conn, settings, report.feeds, pool, now, fetch=True)
     feeds_with_news = [feed for feed in report.feeds if feed.matches]
     if not report.feeds:
         log.info("No client has its feed day today")
@@ -331,7 +390,8 @@ def run_weekly(cfg: Config, conn: sqlite3.Connection, *, now: datetime | None = 
         unsub = None if test else {
             feed.client_id: f"{base}/u/{store.unsubscribe_token(conn, feed.client_id, address)}" for feed in feeds
         }
-        subject, html_body, text_body = message_for(cfg, settings, feeds, now=now, unsub_links=unsub, images=pictures)
+        subject, html_body, text_body = message_for(cfg, settings, feeds, now=now, unsub_links=unsub, images=pictures,
+                                                    notes=notes, findings=findings)
         findings = gate.scan_email(subject, html_body, text_body)
         if any(finding.is_error for finding in findings):
             report.skipped.append((address, "the security layer blocked this email; see the log"))

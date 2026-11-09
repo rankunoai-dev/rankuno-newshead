@@ -31,6 +31,8 @@ class StoryLine:
     image_cid: str | None = None  # the story picture, embedded as this Content-ID
     image_width: int = 0  # display width in pixels: 568 for a lead picture, 150 for a thumbnail
     image_height: int = 0
+    takeaways: tuple[str, ...] = ()  # key takeaways, from the article's own sentences
+    actions: tuple[str, ...] = ()  # suggested actions for the account team
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,23 @@ class ClientSection:
     industries: tuple[str, ...]
     stories: tuple[StoryLine, ...]
     unsubscribe_url: str | None
+    mentions: tuple = ()  # analysis.Mention: where the client is named in the articles
+    competitor_watch: tuple = ()  # analysis.Mention: competitors named in the articles
+
+
+MENTION_LABELS = {"linked": "Linked", "unlinked": "Named, not linked", "unknown": "Named", "competitor": "Competitor"}
+
+
+def _mention_view(mention) -> dict:
+    return {
+        "kind": mention.kind,
+        "kind_label": MENTION_LABELS.get(mention.kind, mention.kind),
+        "term": mention.term,
+        "publisher": mention.publisher,
+        "title": mention.title,
+        "url": mention.url,
+        "snippet": mention.snippet,
+    }
 
 
 def _e(value: object) -> str:
@@ -103,6 +122,8 @@ def _story_view(story: StoryLine, cfg: Config, client_name: str) -> dict:
         "badge_label": label,
         "badge_color": color,
         "why": why,
+        "takeaways": list(story.takeaways),
+        "actions": list(story.actions),
         "image_src": f"cid:{story.image_cid}" if story.image_cid else None,
         "image_width": story.image_width or 150,
         "image_height": story.image_height or None,
@@ -137,6 +158,8 @@ def weekly_email(cfg: Config, run_day: datetime, sections: list[ClientSection]) 
             "industries": " · ".join(section.industries),
             "themes": " · ".join(themes) if themes else "none this week",
             "unsubscribe_url": section.unsubscribe_url,
+            "mentions": [_mention_view(mention) for mention in section.mentions],
+            "competitor_watch": [_mention_view(mention) for mention in section.competitor_watch],
             "strategic": [_story_view(story, cfg, section.client_name) for story in section.stories if story.strategic],
             "industry": [_story_view(story, cfg, section.client_name) for story in section.stories if not story.strategic],
         })
@@ -178,7 +201,20 @@ def _text_version(cfg: Config, week: str, intro_text: str, sections: list[Client
                 view = _story_view(story, cfg, section.client_name)
                 parts += [f"[{label.upper()}] {story.title}", f"{story.source} · {view['date']}"]
                 parts += [view["excerpt"]] if view["excerpt"] else []
+                parts += [f"Key takeaways: {' / '.join(story.takeaways)}"] if story.takeaways else []
+                parts += [f"Suggested action: {action}" for action in story.actions]
                 parts += [view["why"], f"Read the full article: {story.url}", ""]
+        for heading, rows in (
+            (f"Where {section.client_name} is mentioned", section.mentions),
+            ("Competitor watch", section.competitor_watch),
+        ):
+            if rows:
+                parts += [heading.upper(), ""]
+                for mention in rows:
+                    view = _mention_view(mention)
+                    parts += [f"[{view['kind_label'].upper()}] {mention.title}", f"{mention.publisher} · {view['term']}"]
+                    parts += [f"“{view['snippet']}”"] if view["snippet"] else []
+                    parts += [f"Read: {mention.url}", ""]
         if section.unsubscribe_url:
             parts += [f"Stop receiving {section.client_name} news: {section.unsubscribe_url}", ""]
     parts += ["Prepared for internal client planning within RankUno. Stories link to their original articles."]

@@ -22,6 +22,39 @@
 </tr>
 {% endmacro %}
 
+{% macro notes_block(story) %}
+{% if story.takeaways %}
+<tr>
+  <td style="padding-top:12px; font-family:Arial, Helvetica, sans-serif;">
+    <div style="font-size:11px; line-height:16px; letter-spacing:1px; font-weight:bold; color:#262626; text-transform:uppercase;">Key takeaways</div>
+    {% for line in story.takeaways %}<div style="padding-top:4px; font-size:13px; line-height:20px; color:#404040;">&bull;&nbsp;&nbsp;{{ line }}</div>{% endfor %}
+  </td>
+</tr>
+{% endif %}
+{% for action in story.actions %}
+<tr>
+  <td style="padding-top:8px; font-family:Arial, Helvetica, sans-serif; font-size:12px; line-height:18px; color:#262626;"><span style="color:#DF212A; font-weight:bold;">Suggested action:</span>&nbsp;{{ action }}</td>
+</tr>
+{% endfor %}
+{% endmacro %}
+
+{% macro mention_row(m, last) %}
+<tr>
+  <td class="px" style="padding:0 36px;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+      <tr>
+        <td style="padding:12px 0; {% if not last %}border-bottom:1px solid #E6E6E6;{% endif %} font-family:Arial, Helvetica, sans-serif;">
+          <div style="font-size:11px; line-height:16px; letter-spacing:1px; font-weight:bold; color:#DF212A; text-transform:uppercase;">{{ m.kind_label }}<span style="font-weight:normal; color:#707070;">&nbsp;&nbsp;&middot;&nbsp;&nbsp;{{ m.publisher|upper }}</span></div>
+          <a href="{{ m.url }}" style="display:block; padding-top:4px; font-family:Montserrat, Arial, Helvetica, sans-serif; font-size:15px; line-height:21px; font-weight:bold; color:#262626; text-decoration:none;">{{ m.title }}</a>
+          {% if m.snippet %}<div style="padding-top:6px; font-size:13px; line-height:20px; color:#404040;">&ldquo;{{ m.snippet }}&rdquo;</div>{% endif %}
+          <div style="padding-top:6px; font-size:12px; line-height:18px; color:#707070;">Term found: {{ m.term }}</div>
+        </td>
+      </tr>
+    </table>
+  </td>
+</tr>
+{% endmacro %}
+
 {% macro story_links(story) %}
 <tr>
   <td style="padding-top:10px; font-family:Arial, Helvetica, sans-serif; font-size:13px; line-height:20px;">
@@ -72,6 +105,7 @@
         <td style="padding-top:8px; font-family:Arial, Helvetica, sans-serif; font-size:15px; line-height:24px; color:#404040;">{{ story.excerpt }}</td>
       </tr>
       {% endif %}
+      {{ notes_block(story) }}
       {{ why_line(story) }}
       {{ story_links(story) }}
     </table>
@@ -103,7 +137,8 @@
               <td style="padding-top:6px; font-family:Arial, Helvetica, sans-serif; font-size:14px; line-height:22px; color:#404040;">{{ story.excerpt }}</td>
             </tr>
             {% endif %}
-            {{ why_line(story) }}
+            {{ notes_block(story) }}
+      {{ why_line(story) }}
             {{ story_links(story) }}
           </table>
         </td>
@@ -246,6 +281,20 @@
 
   {% if not client.strategic and not client.industry %}
   <tr><td class="px" style="padding:16px 36px 0 36px; font-family:Arial, Helvetica, sans-serif; font-size:14px; line-height:22px; color:#707070;">No matching developments this week.</td></tr>
+  {% endif %}
+
+  {% if client.mentions %}
+  {{ section_heading("Where " ~ client.name ~ " is mentioned") }}
+  {% for m in client.mentions %}
+  {{ mention_row(m, loop.last) }}
+  {% endfor %}
+  {% endif %}
+
+  {% if client.competitor_watch %}
+  {{ section_heading("Competitor watch") }}
+  {% for m in client.competitor_watch %}
+  {{ mention_row(m, loop.last) }}
+  {% endfor %}
   {% endif %}
 
   {% if client.unsubscribe_url %}

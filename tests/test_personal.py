@@ -244,6 +244,7 @@ class FakeProfile:
 
 @pytest.fixture
 def weekly(monkeypatch, pconn, cfg):
+    monkeypatch.setattr(feed.analysis.articles, "ensure", lambda *a, **k: {})  # no article reads in tests
     monkeypatch.setattr(feed.time, "sleep", lambda seconds: None)  # the real pause between sends is not needed here
     monkeypatch.setattr(feed, "personal_sending_enabled", lambda: True)
     monkeypatch.setattr(feed, "public_base_url", lambda: "https://brief.example.com")
@@ -955,3 +956,96 @@ def test_each_client_section_splits_strategic_from_industry_stories(cfg):
     assert "STRATEGIC CLIENT & MARKET MOVES" in text_body
     assert "VENDOR REPORT" in html_body and "Why it matters to GEP" in html_body
     assert "[VENDOR REPORT]" in text_body
+
+
+# Article reading, takeaways, actions and mentions ------------------------------------------------
+
+
+from rankuno_brief.personal import analysis, articles  # noqa: E402
+
+ARTICLE_HTML = (
+    '<html><head><title>x</title></head><body><nav><a href="https://other.example/home">Home</a></nav>'
+    '<article><p>GEP announced a new supplier risk module for its procurement platform this quarter.</p>'
+    '<p>Analysts said the release targets strategic sourcing teams with better spend visibility.</p>'
+    '<p>Read <a href="https://www.gep.com/products">our product page</a> for details.</p></article></body></html>'
+)
+
+
+def gep_terms():
+    return matching.Terms(names=("GEP",), competitors=("Coupa",), core=("supplier risk",),
+                          operational=(), broad=("procurement",), excludes=())
+
+
+def test_article_text_comes_from_the_article_block_and_links_are_kept():
+    article = articles.extract(ARTICLE_HTML, "https://news.example.com/story")
+    assert "GEP announced a new supplier risk module" in article.body
+    assert "Home" not in article.body  # navigation is outside the article block
+    assert "https://www.gep.com/products" in article.links
+
+
+def test_takeaways_are_the_sentences_with_the_most_relevant_terms():
+    body = ("The market moved this week. GEP announced a new supplier risk module for its procurement platform. "
+            "Weather was mild across the region for most of the period.")
+    takeaways = analysis.takeaways(body, gep_terms())
+    assert takeaways and "GEP announced" in takeaways[0]
+    assert all("Weather" not in line for line in takeaways)
+
+
+def test_suggested_actions_follow_the_rules():
+    actions = analysis.suggested_actions("Coupa expands its AI roadmap", "", gep_terms(),
+                                         content_type="sponsored", strategic=True)
+    assert any(action.startswith("Sponsored content") for action in actions)
+    assert any("Competitor activity (Coupa)" in action for action in actions)
+    assert len(actions) <= 2
+
+
+def test_mentions_are_linked_when_the_article_links_to_the_client_site():
+    item = {"id": 1, "title": "Industry note", "excerpt": "", "publisher": "Example News",
+            "url": "https://news.example.com/story"}
+    linked = articles.ArticleText(body="GEP is named here.", links=("https://www.gep.com/products",))
+    unlinked = articles.ArticleText(body="GEP is named here.", links=("https://other.example/x",))
+    assert analysis.find_mentions(item, linked, gep_terms(), "https://www.gep.com/")[0].kind == "linked"
+    assert analysis.find_mentions(item, unlinked, gep_terms(), "https://www.gep.com/")[0].kind == "unlinked"
+    assert analysis.find_mentions(item, unlinked, gep_terms(), "")[0].kind == "unknown"
+
+
+def test_competitor_mentions_are_found_in_the_article_text_not_only_the_headline():
+    item = {"id": 2, "title": "Buyers compare vendors", "excerpt": "", "publisher": "Trade Daily",
+            "url": "https://trade.example/x"}
+    article = articles.ArticleText(body="Many buyers already use Coupa for invoices.", links=())
+    found = analysis.find_competitors(item, article, gep_terms())
+    assert found and found[0].kind == "competitor" and found[0].term == "Coupa"
+
+
+def test_articles_are_read_once_and_then_served_from_the_cache(monkeypatch, pconn):
+    calls = []
+
+    def fake_fetch(client, url):
+        calls.append(url)
+        return articles.ArticleText(body="Cached body text. " * 8, links=())
+
+    monkeypatch.setattr(articles, "fetch", fake_fetch)
+    monkeypatch.setattr(articles.time, "sleep", lambda seconds: None)
+    pconn.execute("INSERT INTO items (id, url_hash, source_id, title, url, published_at, fetched_at, excerpt) "
+                  "VALUES (50, 'h50', 'x', 'T', 'https://news.example.com/50', ?, ?, '')", (db.to_iso(NOW), db.to_iso(NOW)))
+    items = [{"id": 50, "url": "https://news.example.com/50"}]
+    first = articles.ensure(pconn, items, now=NOW, user_agent="test")
+    second = articles.ensure(pconn, items, now=NOW + timedelta(days=1), user_agent="test")
+    assert first[50].body == second[50].body and first[50].body.startswith("Cached body text.")
+    assert calls == ["https://news.example.com/50"]
+
+
+def test_the_email_shows_mentions_and_competitor_watch(cfg):
+    mention = analysis.Mention("unlinked", "GEP", "Trade Daily", "Buyers compare vendors",
+                               "https://trade.example/x", "GEP is named here.")
+    rival = analysis.Mention("competitor", "Coupa", "Trade Daily", "Coupa news", "https://trade.example/y", "Coupa said.")
+    story = mail.StoryLine("A story", "https://a.example/1", "Trade Daily", NOW, "Excerpt.", ("supplier risk",),
+                           "editorial", True, takeaways=("GEP announced a module.",),
+                           actions=("Core topic (supplier risk): consider a sales angle.",))
+    section = mail.ClientSection("GEP", ("Supply chain",), (story,), None,
+                                 mentions=(mention,), competitor_watch=(rival,))
+    html_body, text_body = mail.weekly_email(cfg, NOW, [section])
+    assert "WHERE GEP IS MENTIONED" in html_body and "Named, not linked" in html_body
+    assert "COMPETITOR WATCH" in html_body
+    assert "Key takeaways" in html_body and "Suggested action:" in html_body
+    assert "Suggested action: Core topic" in text_body

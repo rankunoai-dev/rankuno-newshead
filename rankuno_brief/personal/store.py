@@ -123,6 +123,14 @@ CREATE TABLE IF NOT EXISTS personal_deliveries (
     PRIMARY KEY (run_id, recipient)
 );
 
+-- Full text of articles read for the client brief (body is NULL when the page could not be read).
+CREATE TABLE IF NOT EXISTS personal_articles (
+    item_id     INTEGER PRIMARY KEY REFERENCES items (id),
+    fetched_at  TEXT NOT NULL,
+    body        TEXT,
+    links_json  TEXT NOT NULL DEFAULT '[]'
+);
+
 -- A manager asks for approval of their account (one open request at a time).
 CREATE TABLE IF NOT EXISTS personal_requests (
     id            INTEGER PRIMARY KEY,
