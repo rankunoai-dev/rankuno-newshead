@@ -61,7 +61,8 @@ def takeaways(body: str, terms: matching.Terms, count: int = TAKEAWAYS) -> tuple
     return tuple(sentence for _, _, sentence in sorted(top, key=lambda entry: entry[1]))
 
 
-def suggested_actions(title: str, body: str, terms: matching.Terms, *, content_type: str, strategic: bool) -> tuple[str, ...]:
+def suggested_actions(title: str, body: str, terms: matching.Terms, *, client_name: str, content_type: str,
+                      strategic: bool) -> tuple[str, ...]:
     """One or two plain actions for the account team, from fixed rules."""
     actions: list[str] = []
     if content_type == "sponsored":
@@ -70,15 +71,15 @@ def suggested_actions(title: str, body: str, terms: matching.Terms, *, content_t
         actions.append("Vendor content: check its claims, and note which company is behind it.")
     competitors = matching._hits(terms.competitors, f"{title} {body}")
     if competitors:
-        actions.append(f"Competitor activity ({', '.join(competitors[:2])}): compare it with GEP's positioning and talk track.")
+        actions.append(f"Competitor activity ({', '.join(competitors[:2])}): compare it with {client_name}'s positioning and talk track.")
     if matching._hits(terms.names, body) and not matching._hits(terms.names, title):
-        actions.append("GEP is named in the article but not in the headline: check how it is described.")
+        actions.append(f"{client_name} is named in the article but not in the headline: check how it is described.")
     core = matching._hits(terms.core, f"{title} {body}")
     operational = matching._hits(terms.operational, f"{title} {body}")
     if core and strategic:
-        actions.append(f"Core topic ({core[0]}): consider a sales or content angle for GEP.")
+        actions.append(f"Core topic ({core[0]}): consider a sales or content angle for {client_name}.")
     elif operational:
-        actions.append(f"Operating trend ({operational[0]}): relevant to GEP's solution areas.")
+        actions.append(f"Operating trend ({operational[0]}): relevant to {client_name}'s solution areas.")
     if not actions:
         actions.append("Background reading for the account team.")
     return tuple(dict.fromkeys(actions))[:2]

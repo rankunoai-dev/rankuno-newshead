@@ -37,6 +37,7 @@ from .config import Config, ConfigError
 from .mail_profiles import PRODUCTION, TEST, load_profile, production_sending_enabled
 from .mailer import MailError
 from .personal import feed as personal_feed
+from .personal import client_news as personal_client_news
 from .personal import store as personal_store
 from .personal import web as personal_web
 from .personal.settings import cached_settings as personal_settings
@@ -188,6 +189,15 @@ class App:
         if base:
             self.personal = personal_web.PersonalWeb(cfg, base)
 
+    def _daily_fetch(self, conn) -> int:
+        """The general news fetch, then each client's own searches (for the client feeds)."""
+        result = cli.cmd_fetch(self.cfg, conn, argparse.Namespace())
+        try:
+            personal_client_news.fetch_client_news(self.cfg, conn)
+        except Exception:  # noqa: BLE001 - client searches must never stop the general fetch
+            log.exception("Client news fetch failed")
+        return result
+
     def _bootstrap_shared_login(self) -> None:
         """First start only: the shared admin password comes from ADMIN_PASSWORD. After that it is changed in the
         admin dashboard, and the environment variable is no longer used."""
@@ -244,7 +254,7 @@ class App:
         finally:
             conn.close()
         for job in due_jobs(now, self.cfg, self.state, sent_dates):
-            if job == "fetch" and self.runner.start("scheduled fetch", lambda conn: cli.cmd_fetch(self.cfg, conn, argparse.Namespace())):
+            if job == "fetch" and self.runner.start("scheduled fetch", self._daily_fetch):
                 self.state.last_fetch_date = now.date()
             elif job == "production" and self.runner.start("scheduled issue", self._production):
                 self.state.production_dates.add(now.date())

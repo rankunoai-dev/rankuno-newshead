@@ -192,7 +192,7 @@ def analyse_feeds(cfg: Config, conn: sqlite3.Connection, settings: PersonalSetti
             source_text = article.body if article and article.body else (item["excerpt"] or "")
             per_item[match.item_id] = (
                 analysis.takeaways(source_text, terms) or analysis.takeaways(item["excerpt"] or "", terms),
-                analysis.suggested_actions(item["title"], source_text, terms,
+                analysis.suggested_actions(item["title"], source_text, terms, client_name=feed.client["client_name"],
                                            content_type=match.content_type, strategic=match.strategic),
             )
         notes[feed.client_id] = per_item

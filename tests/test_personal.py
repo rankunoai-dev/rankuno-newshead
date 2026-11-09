@@ -992,10 +992,11 @@ def test_takeaways_are_the_sentences_with_the_most_relevant_terms():
 
 
 def test_suggested_actions_follow_the_rules():
-    actions = analysis.suggested_actions("Coupa expands its AI roadmap", "", gep_terms(),
+    actions = analysis.suggested_actions("Coupa expands its AI roadmap", "", gep_terms(), client_name="Acme",
                                          content_type="sponsored", strategic=True)
     assert any(action.startswith("Sponsored content") for action in actions)
-    assert any("Competitor activity (Coupa)" in action for action in actions)
+    assert any("Competitor activity (Coupa)" in action and "Acme's positioning" in action for action in actions)
+    assert all("GEP" not in action for action in actions)  # the wording follows the client, whoever it is
     assert len(actions) <= 2
 
 
@@ -1049,3 +1050,41 @@ def test_the_email_shows_mentions_and_competitor_watch(cfg):
     assert "COMPETITOR WATCH" in html_body
     assert "Key takeaways" in html_body and "Suggested action:" in html_body
     assert "Suggested action: Core topic" in text_body
+
+
+# Per-client searches ----------------------------------------------------------------------------
+
+
+def test_each_active_client_gets_one_search_from_its_names_and_competitors(pconn):
+    from rankuno_brief.personal import client_news
+
+    manager = store.add_person(pconn, "lead@rankuno.com", "Lead", "manager", NOW)
+    acme = store.create_client(pconn, manager, data_for("Acme Corp") | {
+        "aliases": ["Acme Cloud"], "competitors": [{"name": "Globex", "website": ""}]}, NOW)
+    store.set_client_status(pconn, acme, "active", NOW)
+    store.create_client(pconn, manager, data_for("Draft Only"), NOW)  # still a draft: no search yet
+    sources = client_news.sources_for(pconn)
+    assert [source.id for source in sources] == [f"client-news-{acme}"]
+    assert sources[0].query == '("Acme Corp" OR "Acme Cloud" OR "Globex")'
+    assert client_news.is_client_news(sources[0].id) and sources[0].personal_only
+
+
+def test_client_searches_are_fetched_separately_and_stay_out_of_the_general_brief(monkeypatch, cfg, pconn):
+    from rankuno_brief.personal import client_news
+
+    manager = store.add_person(pconn, "lead@rankuno.com", "Lead", "manager", NOW)
+    client = store.create_client(pconn, manager, data_for("Acme Corp"), NOW)
+    store.set_client_status(pconn, client, "active", NOW)
+    seen = {}
+
+    class Summary:
+        ok, failed, new_items = 1, 0, 0
+
+    def fake_run(run_cfg, conn):
+        seen["sources"] = [source.id for source in run_cfg.sources]
+        return Summary()
+
+    monkeypatch.setattr(client_news.fetch, "run_fetch", fake_run)
+    client_news.fetch_client_news(cfg, pconn)
+    assert seen["sources"] == [f"client-news-{client}"]
+    assert all(source.id.startswith("client-news-") is False for source in cfg.sources if source.personal_only is False)

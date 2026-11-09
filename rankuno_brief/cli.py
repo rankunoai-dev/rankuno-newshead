@@ -173,7 +173,8 @@ def build_issue(cfg: Config, conn: sqlite3.Connection, *, issue_date: date | Non
         window_start = now - timedelta(days=cfg.issue.first_issue_lookback_days)
     rows = db.candidate_items(conn, window_start - timedelta(hours=cfg.issue.grace_hours))
     # Sources marked personal_only feed the client feeds only; they are never part of the general brief.
-    rows = [row for row in rows if not (cfg.source_map.get(row["source_id"]) and cfg.source_map[row["source_id"]].personal_only)]
+    rows = [row for row in rows if not (cfg.source_map.get(row["source_id"]) and cfg.source_map[row["source_id"]].personal_only)
+            and not row["source_id"].startswith("client-news-")]
 
     # Security screen: offensive, sensitive or unsafe items never reach selection.
     gate = gate_for(cfg)

@@ -1,6 +1,6 @@
 """Reads the full text of articles for the client brief: their main text, and the links they contain.
 
-The text drives the key takeaways, the "where GEP is mentioned" check and the competitor watch. Pages are fetched
+The text drives the key takeaways, the "where the client is mentioned" check and the competitor watch. Pages are fetched
 once and cached in the database: a successful read is kept for CACHE_DAYS, a failed one is retried after
 RETRY_DAYS. Each run reads at most `limit` pages, with a pause between requests to the same host.
 """
